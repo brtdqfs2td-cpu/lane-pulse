@@ -2,12 +2,13 @@
 
 // Bump this on any change to PRECACHE_URLS or when you want clients to
 // pick up new page/asset versions on next load.
-var CACHE_VERSION = "lane-pulse-v1";
+var CACHE_VERSION = "lane-pulse-v2";
 
 var PRECACHE_URLS = [
   "./",
   "index.html",
   "coach.html",
+  "summary.html",
   "manifest.json",
   "coach.manifest.json",
   "icons/swimmer-192.png",

@@ -696,10 +696,11 @@
       row.innerHTML =
         "<span>" + s.name + "</span>" +
         '<span class="practice-metric" style="text-align:left; font-family: var(--font-ui);">' +
-          '<button class="btn btn-ghost btn-sm" type="button">Copy share token</button>' +
+          '<button class="btn btn-ghost btn-sm" type="button">Copy share link</button>' +
         "</span>";
       row.querySelector("button").addEventListener("click", function () {
-        if (navigator.clipboard) navigator.clipboard.writeText(s.share_token).catch(function () {});
+        var link = new URL("summary.html?token=" + encodeURIComponent(s.share_token), window.location.href).href;
+        if (navigator.clipboard) navigator.clipboard.writeText(link).catch(function () {});
       });
       el.teamRosterList.appendChild(row);
     });
