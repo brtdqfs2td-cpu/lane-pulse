@@ -331,6 +331,39 @@
   <div class="card">
     <div class="card-head-row">
       <div>
+        <span class="card-title">Backend sync</span>
+        <span class="practice-hint" id="apiStatusText">Not connected — enter the API URL and coach key below.</span>
+      </div>
+    </div>
+    <div class="card-head-row" style="padding-top:0; gap:10px; flex-wrap:wrap;">
+      <div class="field-inline" style="flex:1; min-width:220px;">
+        <label for="apiUrlInput">API URL</label>
+        <input type="text" id="apiUrlInput" class="filter-input" style="width:100%;" placeholder="http://127.0.0.1:8787">
+      </div>
+      <div class="field-inline" style="flex:1; min-width:220px;">
+        <label for="apiKeyInput">Coach key</label>
+        <input type="password" id="apiKeyInput" class="filter-input" style="width:100%;" placeholder="paste coach API key">
+      </div>
+      <button class="btn btn-primary btn-sm" id="saveApiConfigBtn" type="button">Save &amp; connect</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head-row">
+      <span class="card-title">Team roster</span>
+      <div class="practice-controls">
+        <input type="text" id="newRosterNameInput" class="filter-input" placeholder="Swimmer name" style="width:150px;">
+        <button class="btn btn-primary btn-sm" id="addRosterSwimmerBtn" type="button">+ Add to roster</button>
+      </div>
+    </div>
+    <div class="history-list" id="teamRosterList">
+      <div class="history-empty">Connect the backend above to load the team roster.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head-row">
+      <div>
         <span class="card-title">Practice</span>
         <span class="practice-hint" id="practiceHint">Not started — start a practice to log everyone's readings into history below.</span>
       </div>
@@ -353,6 +386,7 @@
             <th class="no-sort">Trend</th>
             <th class="no-sort">Battery</th>
             <th class="no-sort">Max HR</th>
+            <th class="no-sort">Roster</th>
             <th class="no-sort"></th>
           </tr>
         </thead>
@@ -392,11 +426,15 @@
 
   var SPARK_MAX = 40;
   var PRACTICE_STORAGE_KEY = "lanePulseCoach.practices.v1";
+  var API_CONFIG_KEY = "lanePulseCoach.apiConfig.v1";
   var swimmers = new Map();   // id -> swimmer state
   var rows = new Map();       // id -> { tr, els }
   var swimmerCounter = 0;
   var sortMode = "roster";    // 'roster' | 'intensity'
   var rosterOrder = [];       // ids in the order they were added (stable sort)
+
+  var apiConfig = { baseUrl: "", coachKey: "" };
+  var teamRoster = [];         // swimmer profiles fetched from the backend
 
   var practiceActive = false;
   var practiceStart = null;
@@ -421,7 +459,14 @@
     practiceHint: document.getElementById("practiceHint"),
     historyFilter: document.getElementById("historyFilter"),
     clearHistoryBtn: document.getElementById("clearHistoryBtn"),
-    historyList: document.getElementById("historyList")
+    historyList: document.getElementById("historyList"),
+    apiUrlInput: document.getElementById("apiUrlInput"),
+    apiKeyInput: document.getElementById("apiKeyInput"),
+    saveApiConfigBtn: document.getElementById("saveApiConfigBtn"),
+    apiStatusText: document.getElementById("apiStatusText"),
+    teamRosterList: document.getElementById("teamRosterList"),
+    newRosterNameInput: document.getElementById("newRosterNameInput"),
+    addRosterSwimmerBtn: document.getElementById("addRosterSwimmerBtn")
   };
 
   function bluetoothSupported() { return !!(navigator.bluetooth && window.isSecureContext); }
@@ -489,7 +534,8 @@
       battery: null,
       maxHrOverride: null,
       contactOk: true,
-      status: "connecting" // connecting | live | disconnected | error
+      status: "connecting", // connecting | live | disconnected | error
+      rosterSwimmerId: null  // links this live pairing to a persistent team-roster profile
     };
     swimmers.set(id, swimmer);
     rosterOrder.push(id);
@@ -557,6 +603,143 @@
   });
 
   // ---------------------------------------------------------------
+  // Backend sync — team roster (persistent swimmer profiles) and
+  // pushing practice summaries. Local practice history keeps working
+  // exactly as before regardless of whether the backend is reachable;
+  // this is a best-effort addition on top of it, never a replacement.
+  // ---------------------------------------------------------------
+  function loadApiConfig() {
+    try {
+      var raw = localStorage.getItem(API_CONFIG_KEY);
+      if (!raw) return;
+      var cfg = JSON.parse(raw);
+      apiConfig.baseUrl = cfg.baseUrl || "";
+      apiConfig.coachKey = cfg.coachKey || "";
+      el.apiUrlInput.value = apiConfig.baseUrl;
+      el.apiKeyInput.value = apiConfig.coachKey;
+    } catch (e) { /* storage unavailable — ignore, backend sync stays disabled */ }
+  }
+  function saveApiConfig() {
+    apiConfig.baseUrl = el.apiUrlInput.value.trim().replace(/\/+$/, "");
+    apiConfig.coachKey = el.apiKeyInput.value.trim();
+    try {
+      localStorage.setItem(API_CONFIG_KEY, JSON.stringify(apiConfig));
+    } catch (e) { /* ignore */ }
+    if (apiConfig.baseUrl && apiConfig.coachKey) fetchTeamRoster();
+    else el.apiStatusText.textContent = "Not connected — enter the API URL and coach key above.";
+  }
+  el.saveApiConfigBtn.addEventListener("click", saveApiConfig);
+
+  function apiFetch(path, options) {
+    options = options || {};
+    options.headers = Object.assign({ "Authorization": "Bearer " + apiConfig.coachKey }, options.headers || {});
+    return fetch(apiConfig.baseUrl + path, options);
+  }
+
+  function fetchTeamRoster() {
+    if (!apiConfig.baseUrl || !apiConfig.coachKey) return;
+    el.apiStatusText.textContent = "Connecting…";
+    apiFetch("/roster")
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        teamRoster = data.swimmers || [];
+        el.apiStatusText.textContent = "Connected — " + teamRoster.length + " swimmer" + (teamRoster.length === 1 ? "" : "s") + " on the team roster.";
+        renderTeamRoster();
+        renderAll(); // refresh the roster-link dropdowns in the live pairing table
+      })
+      .catch(function (err) {
+        el.apiStatusText.textContent = "Connection failed — check the API URL and coach key (" + err.message + ").";
+      });
+  }
+
+  function createRosterSwimmer() {
+    var name = el.newRosterNameInput.value.trim();
+    if (!name) return;
+    if (!apiConfig.baseUrl || !apiConfig.coachKey) {
+      el.apiStatusText.textContent = "Connect the backend above before adding to the roster.";
+      return;
+    }
+    apiFetch("/roster/swimmers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name })
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function () {
+        el.newRosterNameInput.value = "";
+        fetchTeamRoster();
+      })
+      .catch(function (err) {
+        el.apiStatusText.textContent = "Couldn't add swimmer (" + err.message + ").";
+      });
+  }
+  el.addRosterSwimmerBtn.addEventListener("click", createRosterSwimmer);
+  el.newRosterNameInput.addEventListener("keydown", function (evt) {
+    if (evt.key === "Enter") createRosterSwimmer();
+  });
+
+  function renderTeamRoster() {
+    el.teamRosterList.innerHTML = "";
+    if (!teamRoster.length) {
+      el.teamRosterList.innerHTML = '<div class="history-empty">No swimmers on the roster yet — add one above.</div>';
+      return;
+    }
+    teamRoster.forEach(function (s) {
+      var row = document.createElement("div");
+      row.className = "practice-swimmer-row";
+      row.innerHTML =
+        "<span>" + s.name + "</span>" +
+        '<span class="practice-metric" style="text-align:left; font-family: var(--font-ui);">' +
+          '<button class="btn btn-ghost btn-sm" type="button">Copy share token</button>' +
+        "</span>";
+      row.querySelector("button").addEventListener("click", function () {
+        if (navigator.clipboard) navigator.clipboard.writeText(s.share_token).catch(function () {});
+      });
+      el.teamRosterList.appendChild(row);
+    });
+  }
+
+  function syncPracticeToBackend(durationMs) {
+    if (!apiConfig.baseUrl || !apiConfig.coachKey) return;
+
+    var linkedSwimmers = [];
+    rosterOrder.forEach(function (id) {
+      var s = swimmers.get(id);
+      if (s && s.rosterSwimmerId && s.practiceReadings && s.practiceReadings.length >= 3) {
+        var sm = summarizeReadings(s.practiceReadings);
+        linkedSwimmers.push({ swimmerId: s.rosterSwimmerId, avgBpm: sm.avgBpm, maxBpm: sm.maxBpm, minBpm: sm.minBpm });
+      }
+    });
+    if (!linkedSwimmers.length) return;
+
+    var now = new Date(practiceStart + durationMs);
+    var sessionDate = new Date(practiceStart).toISOString().slice(0, 10);
+    apiFetch("/practices", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionDate: sessionDate,
+        startTime: new Date(practiceStart).toISOString(),
+        endTime: now.toISOString(),
+        swimmers: linkedSwimmers
+      })
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        el.apiStatusText.textContent = "Synced " + linkedSwimmers.length + " swimmer" + (linkedSwimmers.length === 1 ? "" : "s") + " to the backend.";
+      })
+      .catch(function (err) {
+        el.apiStatusText.textContent = "Backend sync failed (" + err.message + ") — practice is still saved locally.";
+      });
+  }
+
+  // ---------------------------------------------------------------
   // Practice tracking — logs each swimmer's readings while running,
   // saves a per-swimmer summary to this device's localStorage on end.
   // ---------------------------------------------------------------
@@ -616,6 +799,7 @@
 
     if (swimmerSummaries.length && durationMs > 5000) {
       savePractice({ endedAt: Date.now(), durationMs: durationMs, swimmers: swimmerSummaries });
+      syncPracticeToBackend(durationMs);
     }
 
     el.practiceBtn.textContent = "Start practice";
@@ -793,6 +977,16 @@
     });
     tdMaxHr.appendChild(maxHrInput);
 
+    var tdRoster = document.createElement("td");
+    var rosterSelect = document.createElement("select");
+    rosterSelect.className = "maxhr-input";
+    rosterSelect.style.width = "110px";
+    rosterSelect.setAttribute("aria-label", "Link to team roster");
+    rosterSelect.addEventListener("change", function () {
+      swimmer.rosterSwimmerId = rosterSelect.value || null;
+    });
+    tdRoster.appendChild(rosterSelect);
+
     var tdActions = document.createElement("td");
     var removeBtn = document.createElement("button");
     removeBtn.className = "btn btn-ghost btn-sm";
@@ -803,11 +997,11 @@
 
     tr.appendChild(tdName); tr.appendChild(tdStatus); tr.appendChild(tdBpm);
     tr.appendChild(tdZone); tr.appendChild(tdSpark); tr.appendChild(tdBatt);
-    tr.appendChild(tdMaxHr); tr.appendChild(tdActions);
+    tr.appendChild(tdMaxHr); tr.appendChild(tdRoster); tr.appendChild(tdActions);
 
     var refs = {
       tr: tr,
-      els: { dot: dot, statusText: statusText, bpmEl: bpmEl, zonePill: zonePill, path: path, tdBatt: tdBatt, maxHrInput: maxHrInput, nameInput: nameInput }
+      els: { dot: dot, statusText: statusText, bpmEl: bpmEl, zonePill: zonePill, path: path, tdBatt: tdBatt, maxHrInput: maxHrInput, nameInput: nameInput, rosterSelect: rosterSelect }
     };
     rows.set(swimmer.id, refs);
     return refs;
@@ -855,6 +1049,25 @@
     }
     if (document.activeElement !== els.nameInput) {
       els.nameInput.value = swimmer.name;
+    }
+
+    // roster link — rebuild options only when the list actually changes shape,
+    // to avoid fighting the user's own selection on every render
+    var wantOptionsSig = teamRoster.map(function (s) { return s.swimmer_id; }).join(",");
+    if (els.rosterSelect.dataset.optionsSig !== wantOptionsSig) {
+      els.rosterSelect.dataset.optionsSig = wantOptionsSig;
+      var current = els.rosterSelect.value;
+      els.rosterSelect.innerHTML = '<option value="">Not linked</option>';
+      teamRoster.forEach(function (s) {
+        var opt = document.createElement("option");
+        opt.value = s.swimmer_id;
+        opt.textContent = s.name;
+        els.rosterSelect.appendChild(opt);
+      });
+      els.rosterSelect.value = current;
+    }
+    if (document.activeElement !== els.rosterSelect) {
+      els.rosterSelect.value = swimmer.rosterSwimmerId || "";
     }
   }
 
@@ -911,6 +1124,8 @@
     el.addBtn.textContent = "Bluetooth unavailable";
     el.emptyState.innerHTML = '<strong>Web Bluetooth isn’t available here</strong>Open this page in Chrome or Edge on desktop or Android to pair sensors.';
   }
+  loadApiConfig();
+  if (apiConfig.baseUrl && apiConfig.coachKey) fetchTeamRoster();
   renderHistory();
   renderAll();
 })();
