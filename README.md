@@ -8,7 +8,9 @@ Everything runs client-side, straight from the sensor to the browser over
 [Web Bluetooth](https://developer.mozilla.org/en-US/docs/Web/API/Web_Bluetooth_API) —
 there's no backend, no build step, and no data ever leaves the browser.
 Session and practice history are saved to `localStorage`, so history is
-per-browser, per-device.
+per-browser, per-device. Fonts are self-hosted and a service worker
+precaches the app shell, so both pages keep working with no signal (handy
+at a pool deck) after the first visit.
 
 ## Pages
 
@@ -53,6 +55,17 @@ Each page has its own manifest and icon, so Chrome/Edge's install prompt
 "Add to Home screen") works independently for either page — install the
 swimmer view, the coach view, or both.
 
+### Offline use
+
+Both pages register a shared service worker ([`service-worker.js`](service-worker.js))
+that precaches the app shell — both HTML pages, both manifests, the icons,
+and the fonts. After the first successful load, reopening either page (or
+the installed app) works with no network at all; the service worker also
+refreshes its cache in the background whenever you do have a connection, so
+you pick up new deploys automatically. If you change what the app shell
+needs to load, bump `CACHE_VERSION` in `service-worker.js` so clients pick
+up the new file list.
+
 ## Project layout
 
 ```
@@ -60,7 +73,9 @@ index.html              Swimmer view (Lane Pulse)
 coach.html               Coach view (Lane Pulse Coach)
 manifest.json             PWA manifest for the swimmer view
 coach.manifest.json        PWA manifest for the coach view
+service-worker.js          Offline app-shell caching, shared by both pages
 icons/                     App icons referenced by the manifests
+fonts/                     Self-hosted Manrope + IBM Plex Mono (woff2)
 ```
 
 ## Notes
@@ -70,3 +85,6 @@ icons/                     App icons referenced by the manifests
   measurement.
 - Everything is static HTML/CSS/JS — deploy it to any static host (GitHub
   Pages, Netlify, Vercel, etc.) as-is, no build step required.
+- No third-party network calls at all (fonts are self-hosted), which also
+  means nothing is sent to Google or any other outside service just from
+  opening the page.
