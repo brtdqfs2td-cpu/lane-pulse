@@ -1,0 +1,15 @@
+name = "lane-pulse-api"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# If queries fail to connect, verify this matches your MotherDuck org's actual
+# region (Settings -> General in the MotherDuck UI). us-east-1-aws is the
+# common default but not guaranteed for every account.
+MOTHERDUCK_HOST = "pg.us-east-1-aws.motherduck.com"
+MOTHERDUCK_DB = "lane_pulse"
+
+# Secrets (never stored here) -- set with `npx wrangler secret put <NAME>`:
+#   MOTHERDUCK_TOKEN  - MotherDuck read/write token
+#   COACH_API_KEY     - shared secret the coach device sends as a bearer token
