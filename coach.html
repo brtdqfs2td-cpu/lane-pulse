@@ -425,6 +425,7 @@
   "use strict";
 
   var SPARK_MAX = 40;
+  var RR_WINDOW = 30;           // beats used for rMSSD, matches index.html
   var PRACTICE_STORAGE_KEY = "lanePulseCoach.practices.v1";
   var API_CONFIG_KEY = "lanePulseCoach.apiConfig.v1";
   var swimmers = new Map();   // id -> swimmer state
@@ -486,15 +487,41 @@
   }
 
   // ---------------------------------------------------------------
-  // GATT — minimal Heart Rate Measurement parse (bpm + contact only)
+  // GATT — Heart Rate Measurement parse (bpm, contact, and RR intervals for HRV)
   // ---------------------------------------------------------------
   function parseHeartRate(dataView) {
     var flags = dataView.getUint8(0);
     var rate16 = (flags & 0x1) !== 0;
     var contactSupported = (flags & 0x4) !== 0;
     var contactDetected = (flags & 0x2) !== 0;
-    var bpm = rate16 ? dataView.getUint16(1, true) : dataView.getUint8(1);
-    return { bpm: bpm, contactSupported: contactSupported, contactDetected: contactDetected };
+    var energyPresent = (flags & 0x8) !== 0;
+    var rrPresent = (flags & 0x10) !== 0;
+
+    var offset = 1;
+    var bpm;
+    if (rate16) { bpm = dataView.getUint16(offset, true); offset += 2; }
+    else { bpm = dataView.getUint8(offset); offset += 1; }
+    if (energyPresent) offset += 2; // energy expended — not surfaced in this dashboard
+
+    var rrIntervals = [];
+    if (rrPresent) {
+      while (offset + 1 < dataView.byteLength) {
+        var rrRaw = dataView.getUint16(offset, true); // units of 1/1024 second
+        rrIntervals.push((rrRaw / 1024) * 1000);       // -> milliseconds
+        offset += 2;
+      }
+    }
+    return { bpm: bpm, contactSupported: contactSupported, contactDetected: contactDetected, rrIntervals: rrIntervals };
+  }
+
+  function rmssd(rr) {
+    if (rr.length < 2) return null;
+    var sumSq = 0;
+    for (var i = 1; i < rr.length; i++) {
+      var d = rr[i] - rr[i - 1];
+      sumSq += d * d;
+    }
+    return Math.sqrt(sumSq / (rr.length - 1));
   }
 
   function onNotification(id, evt) {
@@ -506,7 +533,24 @@
     swimmer.contactOk = !reading.contactSupported || reading.contactDetected;
     swimmer.points.push({ bpm: reading.bpm });
     if (swimmer.points.length > SPARK_MAX) swimmer.points.shift();
-    if (practiceActive) swimmer.practiceReadings.push(reading.bpm);
+
+    if (reading.rrIntervals && reading.rrIntervals.length) {
+      swimmer.rr = swimmer.rr.concat(reading.rrIntervals);
+      if (swimmer.rr.length > RR_WINDOW) swimmer.rr = swimmer.rr.slice(swimmer.rr.length - RR_WINDOW);
+      swimmer.hrv = rmssd(swimmer.rr);
+    }
+
+    if (practiceActive) {
+      swimmer.practiceReadings.push(reading.bpm);
+      var now = Date.now();
+      if (swimmer.lastReadingAt) {
+        // attribute the gap since the last reading to the zone just measured,
+        // capped so a reconnect/disconnect gap doesn't skew the totals
+        var elapsedSec = Math.min((now - swimmer.lastReadingAt) / 1000, 5);
+        swimmer.zoneSeconds[zoneFor(reading.bpm, maxHrFor(swimmer))] += elapsedSec;
+      }
+      swimmer.lastReadingAt = now;
+    }
     renderAll();
   }
 
@@ -535,7 +579,11 @@
       maxHrOverride: null,
       contactOk: true,
       status: "connecting", // connecting | live | disconnected | error
-      rosterSwimmerId: null  // links this live pairing to a persistent team-roster profile
+      rosterSwimmerId: null, // links this live pairing to a persistent team-roster profile
+      rr: [],                 // rolling RR window for HRV
+      hrv: null,
+      zoneSeconds: { good: 0, warning: 0, serious: 0, critical: 0 },
+      lastReadingAt: null     // ms timestamp of the last reading, for zone-time attribution
     };
     swimmers.set(id, swimmer);
     rosterOrder.push(id);
@@ -575,7 +623,11 @@
   function removeSwimmer(id) {
     var swimmer = swimmers.get(id);
     if (swimmer && practiceActive && swimmer.practiceReadings && swimmer.practiceReadings.length >= 3) {
-      practiceDropped.push({ name: swimmer.name, readings: swimmer.practiceReadings.slice() });
+      practiceDropped.push({
+        name: swimmer.name, readings: swimmer.practiceReadings.slice(),
+        hrvRmssd: swimmer.hrv, zoneSeconds: swimmer.zoneSeconds,
+        rosterSwimmerId: swimmer.rosterSwimmerId
+      });
     }
     if (swimmer && swimmer.device && swimmer.device.gatt.connected) {
       swimmer.device.gatt.disconnect(); // triggers onDisconnected, then we still remove below
@@ -706,17 +758,22 @@
     });
   }
 
-  function syncPracticeToBackend(durationMs) {
+  function syncPracticeToBackend(combined, durationMs) {
     if (!apiConfig.baseUrl || !apiConfig.coachKey) return;
 
-    var linkedSwimmers = [];
-    rosterOrder.forEach(function (id) {
-      var s = swimmers.get(id);
-      if (s && s.rosterSwimmerId && s.practiceReadings && s.practiceReadings.length >= 3) {
-        var sm = summarizeReadings(s.practiceReadings);
-        linkedSwimmers.push({ swimmerId: s.rosterSwimmerId, avgBpm: sm.avgBpm, maxBpm: sm.maxBpm, minBpm: sm.minBpm });
-      }
-    });
+    var linkedSwimmers = combined
+      .filter(function (c) { return c.rosterSwimmerId; })
+      .map(function (c) {
+        var z = c.zoneSeconds;
+        return {
+          swimmerId: c.rosterSwimmerId, avgBpm: c.avgBpm, maxBpm: c.maxBpm, minBpm: c.minBpm,
+          hrvRmssd: c.hrvRmssd,
+          zoneSecondsEasy: z ? Math.round(z.good) : null,
+          zoneSecondsAerobic: z ? Math.round(z.warning) : null,
+          zoneSecondsThreshold: z ? Math.round(z.serious) : null,
+          zoneSecondsMax: z ? Math.round(z.critical) : null
+        };
+      });
     if (!linkedSwimmers.length) return;
 
     var now = new Date(practiceStart + durationMs);
@@ -766,7 +823,11 @@
     practiceDropped = [];
     rosterOrder.forEach(function (id) {
       var s = swimmers.get(id);
-      if (s) s.practiceReadings = [];
+      if (s) {
+        s.practiceReadings = [];
+        s.zoneSeconds = { good: 0, warning: 0, serious: 0, critical: 0 };
+        s.lastReadingAt = null;
+      }
     });
     el.practiceBtn.textContent = "End practice";
     el.practiceHint.textContent = "Running — logging readings for everyone currently paired (and anyone added during the set).";
@@ -782,25 +843,38 @@
     if (practiceTimerInterval) { clearInterval(practiceTimerInterval); practiceTimerInterval = null; }
     var durationMs = Date.now() - practiceStart;
 
-    var swimmerSummaries = [];
+    // built once, shared between the local save and the backend sync so the
+    // two never drift apart on what counts as "this practice's data"
+    var combined = [];
     rosterOrder.forEach(function (id) {
       var s = swimmers.get(id);
       if (s && s.practiceReadings && s.practiceReadings.length >= 3) {
         var sm = summarizeReadings(s.practiceReadings);
-        swimmerSummaries.push({ name: s.name, avgBpm: sm.avgBpm, maxBpm: sm.maxBpm, minBpm: sm.minBpm });
+        combined.push({
+          name: s.name, avgBpm: sm.avgBpm, maxBpm: sm.maxBpm, minBpm: sm.minBpm,
+          hrvRmssd: s.hrv, zoneSeconds: s.zoneSeconds, rosterSwimmerId: s.rosterSwimmerId
+        });
       }
     });
     practiceDropped.forEach(function (d) {
       if (d.readings.length >= 3) {
         var sm = summarizeReadings(d.readings);
-        swimmerSummaries.push({ name: d.name, avgBpm: sm.avgBpm, maxBpm: sm.maxBpm, minBpm: sm.minBpm });
+        combined.push({
+          name: d.name, avgBpm: sm.avgBpm, maxBpm: sm.maxBpm, minBpm: sm.minBpm,
+          hrvRmssd: d.hrvRmssd, zoneSeconds: d.zoneSeconds, rosterSwimmerId: d.rosterSwimmerId
+        });
       }
     });
     practiceDropped = [];
 
-    if (swimmerSummaries.length && durationMs > 5000) {
-      savePractice({ endedAt: Date.now(), durationMs: durationMs, swimmers: swimmerSummaries });
-      syncPracticeToBackend(durationMs);
+    if (combined.length && durationMs > 5000) {
+      savePractice({
+        endedAt: Date.now(), durationMs: durationMs,
+        swimmers: combined.map(function (c) {
+          return { name: c.name, avgBpm: c.avgBpm, maxBpm: c.maxBpm, minBpm: c.minBpm, hrvRmssd: c.hrvRmssd, zoneSeconds: c.zoneSeconds };
+        })
+      });
+      syncPracticeToBackend(combined, durationMs);
     }
 
     el.practiceBtn.textContent = "Start practice";
