@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lane Pulse — Coach</title>
+<meta name="description" content="Coach's live multi-swimmer heart rate roster with per-practice history, from Bluetooth heart rate sensors.">
+<meta name="theme-color" content="#0b1210">
+<link rel="manifest" href="coach.manifest.json">
+<link rel="icon" href="icons/coach-512.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/coach-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f6f9f8;
+    --surface: #ffffff;
+    --surface-2: #eef3f1;
+    --ink: #0b1210;
+    --ink-secondary: #4b5854;
+    --ink-muted: #7c8985;
+    --hairline: rgba(11, 18, 16, 0.12);
+    --grid: #dfe6e3;
+    --accent: #128064;
+    --accent-strong: #0d6b53;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(18, 128, 100, 0.10);
+    --good: #0a880a;
+    --warning: #a16a08;
+    --serious: #c0562c;
+    --critical: #c02f2f;
+    --good-soft: rgba(12, 163, 12, 0.10);
+    --warning-soft: rgba(250, 178, 25, 0.16);
+    --serious-soft: rgba(236, 131, 90, 0.16);
+    --critical-soft: rgba(208, 59, 59, 0.10);
+    --critical-row: rgba(208, 59, 59, 0.07);
+    --shadow: 0 1px 2px rgba(11, 18, 16, 0.04), 0 8px 24px -16px rgba(11, 18, 16, 0.18);
+    --font-ui: 'Manrope', system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #080d0c;
+      --surface: #0f1615;
+      --surface-2: #15201e;
+      --ink: #f2f6f4;
+      --ink-secondary: #b7c3bf;
+      --ink-muted: #7f8c88;
+      --hairline: rgba(255, 255, 255, 0.09);
+      --grid: #1e2b28;
+      --accent: #35c795;
+      --accent-strong: #4fdcaa;
+      --accent-ink: #04140f;
+      --accent-soft: rgba(53, 199, 149, 0.16);
+      --good: #2fbf2f;
+      --warning: #e0a635;
+      --serious: #e0855e;
+      --critical: #e66767;
+      --good-soft: rgba(47, 191, 47, 0.14);
+      --warning-soft: rgba(224, 166, 53, 0.16);
+      --serious-soft: rgba(224, 133, 94, 0.16);
+      --critical-soft: rgba(230, 103, 103, 0.16);
+      --critical-row: rgba(230, 103, 103, 0.10);
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -16px rgba(0, 0, 0, 0.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #080d0c;
+    --surface: #0f1615;
+    --surface-2: #15201e;
+    --ink: #f2f6f4;
+    --ink-secondary: #b7c3bf;
+    --ink-muted: #7f8c88;
+    --hairline: rgba(255, 255, 255, 0.09);
+    --grid: #1e2b28;
+    --accent: #35c795;
+    --accent-strong: #4fdcaa;
+    --accent-ink: #04140f;
+    --accent-soft: rgba(53, 199, 149, 0.16);
+    --good: #2fbf2f;
+    --warning: #e0a635;
+    --serious: #e0855e;
+    --critical: #e66767;
+    --good-soft: rgba(47, 191, 47, 0.14);
+    --warning-soft: rgba(224, 166, 53, 0.16);
+    --serious-soft: rgba(224, 133, 94, 0.16);
+    --critical-soft: rgba(230, 103, 103, 0.16);
+    --critical-row: rgba(230, 103, 103, 0.10);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -16px rgba(0, 0, 0, 0.6);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font-family: var(--font-ui);
+    font-size: 14.5px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+  button, input { font-family: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 24px 20px 64px; display: flex; flex-direction: column; gap: 16px; }
+
+  /* ---------- suite nav ---------- */
+  .suite-nav {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .suite-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ink-secondary);
+    text-decoration: none;
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    padding: 6px 12px;
+    background: var(--surface);
+    transition: border-color 0.15s ease, color 0.15s ease;
+  }
+  .suite-nav a:hover { border-color: var(--accent); color: var(--accent); }
+
+  header.top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .brand-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 0.11em; text-transform: uppercase; color: var(--accent); }
+  .brand-title { font-size: 24px; font-weight: 800; letter-spacing: -0.01em; margin: 2px 0 0; }
+  .brand-sub { color: var(--ink-secondary); font-size: 13px; margin-top: 4px; max-width: 52ch; }
+
+  .btn {
+    appearance: none; border: 1px solid var(--hairline); background: var(--surface); color: var(--ink);
+    font-weight: 600; font-size: 13px; padding: 9px 14px; border-radius: 8px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 7px; transition: border-color .15s ease, background .15s ease, transform .05s ease;
+    white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn-primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+  .btn-ghost { background: transparent; }
+  .btn-sm { padding: 6px 10px; font-size: 12px; border-radius: 7px; }
+
+  /* ---- summary bar ---- */
+  .summary-bar {
+    background: var(--surface); border: 1px solid var(--hairline); border-radius: 12px;
+    padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+  .summary-left { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  .summary-count { font-family: var(--font-mono); font-size: 20px; font-weight: 700; }
+  .summary-count .u { font-family: var(--font-ui); font-size: 11px; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; letter-spacing: .06em; margin-left: 6px; }
+  .zone-counts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .zone-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 700; padding: 5px 10px; border-radius: 999px; }
+  .zone-chip .swatch { width: 7px; height: 7px; border-radius: 50%; }
+  .summary-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .field-inline { display: flex; align-items: center; gap: 7px; }
+  .field-inline label { font-size: 11px; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
+  .field-inline input {
+    width: 62px; border: 1px solid var(--hairline); background: var(--surface-2); color: var(--ink);
+    border-radius: 7px; padding: 6px 8px; font-family: var(--font-mono); font-size: 13px;
+  }
+
+  /* ---- practice bar ---- */
+  .card-head-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+    padding: 14px 18px;
+  }
+  .card-head-row .card-title { font-size: 13.5px; font-weight: 700; display: block; }
+  .practice-hint { font-size: 12px; color: var(--ink-muted); display: block; margin-top: 2px; max-width: 56ch; }
+  .practice-controls { display: flex; align-items: center; gap: 10px; }
+  .practice-timer, .session-timer {
+    font-family: var(--font-mono); font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums;
+    color: var(--ink-secondary);
+  }
+  .practice-timer.active { color: var(--accent); }
+
+  /* ---- practice history ---- */
+  .history-controls { display: flex; align-items: center; gap: 8px; }
+  .filter-input {
+    width: 170px; border: 1px solid var(--hairline); background: var(--surface-2); color: var(--ink);
+    border-radius: 7px; padding: 6px 10px; font-size: 12.5px;
+  }
+  .history-list { padding: 0 18px 16px; display: flex; flex-direction: column; gap: 14px; }
+  .practice-block { border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; }
+  .practice-block-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+    padding: 9px 13px; background: var(--surface-2); font-size: 12px; color: var(--ink-secondary);
+  }
+  .practice-block-head strong { color: var(--ink); font-weight: 700; }
+  .practice-swimmer-row {
+    display: grid; grid-template-columns: 1fr auto auto auto; gap: 12px; align-items: center;
+    padding: 8px 13px; border-top: 1px solid var(--hairline); font-size: 12.5px;
+  }
+  .practice-swimmer-row:first-of-type { border-top: none; }
+  .practice-metric { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .practice-metric .u { font-family: var(--font-ui); font-size: 10px; color: var(--ink-muted); margin-left: 3px; }
+  .history-empty { padding: 18px; text-align: center; color: var(--ink-muted); font-size: 13px; }
+
+  /* ---- roster table ---- */
+  .card { background: var(--surface); border: 1px solid var(--hairline); border-radius: 14px; overflow: hidden; }
+  .table-scroll { overflow-x: auto; }
+  table.roster { width: 100%; border-collapse: collapse; min-width: 760px; }
+  table.roster thead th {
+    text-align: left; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--ink-muted); padding: 12px 14px; border-bottom: 1px solid var(--hairline);
+    background: var(--surface-2); cursor: pointer; user-select: none; white-space: nowrap;
+  }
+  table.roster thead th.no-sort { cursor: default; }
+  table.roster thead th .arrow { opacity: .5; margin-left: 3px; }
+  table.roster tbody td { padding: 10px 14px; border-bottom: 1px solid var(--hairline); vertical-align: middle; }
+  table.roster tbody tr:last-child td { border-bottom: none; }
+  table.roster tbody tr.row-critical { background: var(--critical-row); }
+
+  .name-input {
+    border: none; background: transparent; color: var(--ink); font-weight: 700; font-size: 13.5px;
+    padding: 4px 2px; width: 100%; min-width: 90px; border-radius: 6px;
+  }
+  .name-input:hover, .name-input:focus { background: var(--surface-2); }
+
+  .status-cell { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-secondary); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-muted); flex: none; }
+  .dot.live { background: var(--good); box-shadow: 0 0 0 3px var(--good-soft); }
+  .dot.connecting { background: var(--warning); }
+  .dot.off { background: var(--ink-muted); }
+
+  .bpm-cell { font-family: var(--font-mono); font-weight: 700; font-size: 19px; font-variant-numeric: tabular-nums; }
+  .bpm-unit { font-size: 10px; color: var(--ink-muted); font-weight: 500; margin-left: 2px; }
+
+  .zone-pill { font-size: 11px; font-weight: 700; padding: 5px 10px; border-radius: 999px; white-space: nowrap; display: inline-block; }
+
+  .spark { display: block; }
+
+  .maxhr-input {
+    width: 52px; border: 1px solid var(--hairline); background: var(--surface-2); color: var(--ink);
+    border-radius: 6px; padding: 5px 6px; font-family: var(--font-mono); font-size: 12px; text-align: center;
+  }
+  .maxhr-input::placeholder { color: var(--ink-muted); }
+
+  .batt-cell { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink-secondary); }
+
+  .empty-state {
+    padding: 48px 24px; text-align: center; color: var(--ink-muted); font-size: 13.5px;
+  }
+  .empty-state strong { display: block; color: var(--ink); font-size: 15px; margin-bottom: 6px; }
+
+  footer.note { font-size: 12px; color: var(--ink-muted); text-align: center; line-height: 1.6; padding-top: 4px; }
+  footer.note code { font-family: var(--font-mono); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+
+  @media (max-width: 640px) {
+    header.top { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav class="suite-nav"><a href="index.html">&larr; Swimmer view</a></nav>
+
+  <header class="top">
+    <div>
+      <div class="brand-eyebrow">Lane Pulse &middot; Coach</div>
+      <h1 class="brand-title">Deck monitor</h1>
+      <p class="brand-sub">Pair each swimmer's sensor to this screen and watch the whole set live. Runs entirely in this browser tab &mdash; nothing is uploaded anywhere.</p>
+    </div>
+    <button class="btn btn-primary" id="addBtn" type="button">+ Add swimmer</button>
+  </header>
+
+  <div class="summary-bar">
+    <div class="summary-left">
+      <span class="summary-count" id="connectedCount">0<span class="u">connected</span></span>
+      <div class="zone-counts" id="zoneCounts"></div>
+    </div>
+    <div class="summary-right">
+      <div class="field-inline">
+        <label for="teamMaxHr">Default max HR</label>
+        <input type="number" id="teamMaxHr" min="100" max="230" placeholder="190">
+      </div>
+      <button class="btn btn-ghost btn-sm" id="sortBtn" type="button">Sort: roster order</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head-row">
+      <div>
+        <span class="card-title">Practice</span>
+        <span class="practice-hint" id="practiceHint">Not started — start a practice to log everyone's readings into history below.</span>
+      </div>
+      <div class="practice-controls">
+        <span class="practice-timer" id="practiceTimer">00:00</span>
+        <button class="btn btn-primary btn-sm" id="practiceBtn" type="button">Start practice</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="table-scroll">
+      <table class="roster" id="rosterTable">
+        <thead>
+          <tr>
+            <th class="no-sort" style="width:22%;">Swimmer</th>
+            <th class="no-sort">Status</th>
+            <th data-sort="bpm">BPM <span class="arrow">▾</span></th>
+            <th data-sort="zone">Zone <span class="arrow">▾</span></th>
+            <th class="no-sort">Trend</th>
+            <th class="no-sort">Battery</th>
+            <th class="no-sort">Max HR</th>
+            <th class="no-sort"></th>
+          </tr>
+        </thead>
+        <tbody id="rosterBody"></tbody>
+      </table>
+    </div>
+    <div class="empty-state" id="emptyState">
+      <strong>No swimmers paired yet</strong>
+      Click &ldquo;Add swimmer&rdquo; and pick a sensor from the Bluetooth list. Repeat for each swimmer &mdash; they'll appear here as rows.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head-row">
+      <span class="card-title">Practice history</span>
+      <div class="history-controls">
+        <input type="text" id="historyFilter" class="filter-input" placeholder="Filter by swimmer name">
+        <button class="btn btn-ghost btn-sm" id="clearHistoryBtn" type="button">Clear history</button>
+      </div>
+    </div>
+    <div class="history-list" id="historyList">
+      <div class="history-empty">No practices logged yet — end a practice to save the team's summary here.</div>
+    </div>
+  </div>
+
+  <footer class="note">
+    Web Bluetooth needs Chrome or Edge on desktop or Android, over HTTPS. Each sensor can only hold one active Bluetooth connection at a time &mdash;
+    if a swimmer's sensor is already paired to their own phone or watch, disconnect it there first.<br>
+    Real-world simultaneous connection limits depend on your device's Bluetooth hardware; if pairing starts failing partway through a large roster, that's usually the cause.
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var SPARK_MAX = 40;
+  var PRACTICE_STORAGE_KEY = "lanePulseCoach.practices.v1";
+  var swimmers = new Map();   // id -> swimmer state
+  var rows = new Map();       // id -> { tr, els }
+  var swimmerCounter = 0;
+  var sortMode = "roster";    // 'roster' | 'intensity'
+  var rosterOrder = [];       // ids in the order they were added (stable sort)
+
+  var practiceActive = false;
+  var practiceStart = null;
+  var practiceTimerInterval = null;
+  var practiceDropped = [];   // {name, readings[]} salvaged from swimmers removed mid-practice
+
+  var ZONE_VAR = { good: "--good", warning: "--warning", serious: "--serious", critical: "--critical" };
+  var ZONE_LABEL = { good: "Easy", warning: "Aerobic", serious: "Threshold", critical: "Max effort" };
+  var ZONE_ORDER = ["good", "warning", "serious", "critical"];
+
+  var el = {
+    addBtn: document.getElementById("addBtn"),
+    sortBtn: document.getElementById("sortBtn"),
+    teamMaxHr: document.getElementById("teamMaxHr"),
+    connectedCount: document.getElementById("connectedCount"),
+    zoneCounts: document.getElementById("zoneCounts"),
+    rosterBody: document.getElementById("rosterBody"),
+    emptyState: document.getElementById("emptyState"),
+    rosterTable: document.getElementById("rosterTable"),
+    practiceBtn: document.getElementById("practiceBtn"),
+    practiceTimer: document.getElementById("practiceTimer"),
+    practiceHint: document.getElementById("practiceHint"),
+    historyFilter: document.getElementById("historyFilter"),
+    clearHistoryBtn: document.getElementById("clearHistoryBtn"),
+    historyList: document.getElementById("historyList")
+  };
+
+  function bluetoothSupported() { return !!(navigator.bluetooth && window.isSecureContext); }
+
+  function teamMaxHr() {
+    var v = parseInt(el.teamMaxHr.value, 10);
+    return (v && v > 60 && v < 240) ? v : 190;
+  }
+  function maxHrFor(swimmer) { return swimmer.maxHrOverride || teamMaxHr(); }
+
+  function zoneFor(bpm, maxHr) {
+    var pct = bpm / maxHr;
+    if (pct < 0.6) return "good";
+    if (pct < 0.75) return "warning";
+    if (pct < 0.88) return "serious";
+    return "critical";
+  }
+
+  // ---------------------------------------------------------------
+  // GATT — minimal Heart Rate Measurement parse (bpm + contact only)
+  // ---------------------------------------------------------------
+  function parseHeartRate(dataView) {
+    var flags = dataView.getUint8(0);
+    var rate16 = (flags & 0x1) !== 0;
+    var contactSupported = (flags & 0x4) !== 0;
+    var contactDetected = (flags & 0x2) !== 0;
+    var bpm = rate16 ? dataView.getUint16(1, true) : dataView.getUint8(1);
+    return { bpm: bpm, contactSupported: contactSupported, contactDetected: contactDetected };
+  }
+
+  function onNotification(id, evt) {
+    var swimmer = swimmers.get(id);
+    if (!swimmer) return;
+    var reading = parseHeartRate(evt.target.value);
+    if (!reading.bpm || reading.bpm < 25 || reading.bpm > 240) return;
+    swimmer.bpm = reading.bpm;
+    swimmer.contactOk = !reading.contactSupported || reading.contactDetected;
+    swimmer.points.push({ bpm: reading.bpm });
+    if (swimmer.points.length > SPARK_MAX) swimmer.points.shift();
+    if (practiceActive) swimmer.practiceReadings.push(reading.bpm);
+    renderAll();
+  }
+
+  async function addSwimmer() {
+    if (!bluetoothSupported()) return;
+    var device;
+    try {
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: ["heart_rate"] }],
+        optionalServices: ["battery_service"]
+      });
+    } catch (err) {
+      return; // user cancelled the picker — nothing to do
+    }
+
+    swimmerCounter += 1;
+    var id = "s_" + swimmerCounter + "_" + Math.round(performance.now());
+    var swimmer = {
+      id: id,
+      name: device.name || ("Swimmer " + swimmerCounter),
+      device: device,
+      points: [],
+      practiceReadings: [],
+      bpm: null,
+      battery: null,
+      maxHrOverride: null,
+      contactOk: true,
+      status: "connecting" // connecting | live | disconnected | error
+    };
+    swimmers.set(id, swimmer);
+    rosterOrder.push(id);
+    renderAll();
+
+    device.addEventListener("gattserverdisconnected", function () { onDisconnected(id); });
+
+    try {
+      var server = await device.gatt.connect();
+      var hrService = await server.getPrimaryService("heart_rate");
+      var hrChar = await hrService.getCharacteristic("heart_rate_measurement");
+      swimmer.hrChar = hrChar;
+      await hrChar.startNotifications();
+      hrChar.addEventListener("characteristicvaluechanged", function (evt) { onNotification(id, evt); });
+      swimmer.status = "live";
+      renderAll();
+
+      server.getPrimaryService("battery_service")
+        .then(function (s) { return s.getCharacteristic("battery_level"); })
+        .then(function (c) { return c.readValue(); })
+        .then(function (v) { swimmer.battery = v.getUint8(0); renderAll(); })
+        .catch(function () { /* battery not exposed mid-stream — leave blank */ });
+    } catch (err) {
+      swimmer.status = "error";
+      renderAll();
+    }
+  }
+
+  function onDisconnected(id) {
+    var swimmer = swimmers.get(id);
+    if (!swimmer) return;
+    swimmer.status = "disconnected";
+    swimmer.bpm = null;
+    renderAll();
+  }
+
+  function removeSwimmer(id) {
+    var swimmer = swimmers.get(id);
+    if (swimmer && practiceActive && swimmer.practiceReadings && swimmer.practiceReadings.length >= 3) {
+      practiceDropped.push({ name: swimmer.name, readings: swimmer.practiceReadings.slice() });
+    }
+    if (swimmer && swimmer.device && swimmer.device.gatt.connected) {
+      swimmer.device.gatt.disconnect(); // triggers onDisconnected, then we still remove below
+    }
+    swimmers.delete(id);
+    rosterOrder = rosterOrder.filter(function (x) { return x !== id; });
+    var row = rows.get(id);
+    if (row) { row.tr.remove(); rows.delete(id); }
+    renderAll();
+  }
+
+  el.addBtn.addEventListener("click", addSwimmer);
+  el.teamMaxHr.addEventListener("input", renderAll);
+  el.sortBtn.addEventListener("click", function () {
+    sortMode = sortMode === "roster" ? "intensity" : "roster";
+    el.sortBtn.textContent = "Sort: " + (sortMode === "roster" ? "roster order" : "intensity (high → low)");
+    renderAll();
+  });
+  el.rosterTable.querySelectorAll("th[data-sort]").forEach(function (th) {
+    th.addEventListener("click", function () {
+      sortMode = "intensity";
+      el.sortBtn.textContent = "Sort: intensity (high → low)";
+      renderAll();
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Practice tracking — logs each swimmer's readings while running,
+  // saves a per-swimmer summary to this device's localStorage on end.
+  // ---------------------------------------------------------------
+  function formatDuration(ms) {
+    var totalSec = Math.floor(ms / 1000);
+    var m = Math.floor(totalSec / 60);
+    var s = totalSec % 60;
+    return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  function summarizeReadings(readings) {
+    var sum = readings.reduce(function (a, b) { return a + b; }, 0);
+    return {
+      avgBpm: Math.round(sum / readings.length),
+      maxBpm: Math.max.apply(null, readings),
+      minBpm: Math.min.apply(null, readings)
+    };
+  }
+
+  function startPractice() {
+    practiceActive = true;
+    practiceStart = Date.now();
+    practiceDropped = [];
+    rosterOrder.forEach(function (id) {
+      var s = swimmers.get(id);
+      if (s) s.practiceReadings = [];
+    });
+    el.practiceBtn.textContent = "End practice";
+    el.practiceHint.textContent = "Running — logging readings for everyone currently paired (and anyone added during the set).";
+    el.practiceTimer.classList.add("active");
+    practiceTimerInterval = setInterval(function () {
+      el.practiceTimer.textContent = formatDuration(Date.now() - practiceStart);
+    }, 1000);
+  }
+
+  function endPractice() {
+    if (!practiceActive) return;
+    practiceActive = false;
+    if (practiceTimerInterval) { clearInterval(practiceTimerInterval); practiceTimerInterval = null; }
+    var durationMs = Date.now() - practiceStart;
+
+    var swimmerSummaries = [];
+    rosterOrder.forEach(function (id) {
+      var s = swimmers.get(id);
+      if (s && s.practiceReadings && s.practiceReadings.length >= 3) {
+        var sm = summarizeReadings(s.practiceReadings);
+        swimmerSummaries.push({ name: s.name, avgBpm: sm.avgBpm, maxBpm: sm.maxBpm, minBpm: sm.minBpm });
+      }
+    });
+    practiceDropped.forEach(function (d) {
+      if (d.readings.length >= 3) {
+        var sm = summarizeReadings(d.readings);
+        swimmerSummaries.push({ name: d.name, avgBpm: sm.avgBpm, maxBpm: sm.maxBpm, minBpm: sm.minBpm });
+      }
+    });
+    practiceDropped = [];
+
+    if (swimmerSummaries.length && durationMs > 5000) {
+      savePractice({ endedAt: Date.now(), durationMs: durationMs, swimmers: swimmerSummaries });
+    }
+
+    el.practiceBtn.textContent = "Start practice";
+    el.practiceHint.textContent = "Not started — start a practice to log everyone's readings into history below.";
+    el.practiceTimer.classList.remove("active");
+    el.practiceTimer.textContent = "00:00";
+  }
+
+  el.practiceBtn.addEventListener("click", function () {
+    if (practiceActive) endPractice(); else startPractice();
+  });
+
+  function loadPractices() {
+    try {
+      var raw = localStorage.getItem(PRACTICE_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  }
+  function savePractice(practice) {
+    var practices = loadPractices();
+    practices.unshift(practice);
+    if (practices.length > 60) practices = practices.slice(0, 60);
+    try { localStorage.setItem(PRACTICE_STORAGE_KEY, JSON.stringify(practices)); } catch (e) { /* storage full or unavailable */ }
+    renderHistory();
+  }
+
+  function renderHistory() {
+    var practices = loadPractices();
+    var filter = (el.historyFilter.value || "").trim().toLowerCase();
+    el.historyList.innerHTML = "";
+
+    var visiblePractices = practices
+      .map(function (p) {
+        var swimmers2 = filter
+          ? p.swimmers.filter(function (s) { return s.name.toLowerCase().indexOf(filter) !== -1; })
+          : p.swimmers;
+        return { practice: p, swimmers: swimmers2 };
+      })
+      .filter(function (entry) { return entry.swimmers.length > 0; });
+
+    if (!visiblePractices.length) {
+      el.historyList.innerHTML = '<div class="history-empty">' +
+        (practices.length ? "No swimmers match that filter." : "No practices logged yet — end a practice to save the team's summary here.") +
+        "</div>";
+      return;
+    }
+
+    visiblePractices.forEach(function (entry) {
+      var p = entry.practice;
+      var block = document.createElement("div");
+      block.className = "practice-block";
+
+      var head = document.createElement("div");
+      head.className = "practice-block-head";
+      var d = new Date(p.endedAt);
+      var dateStr = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) +
+        " · " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+      head.innerHTML = "<strong>" + dateStr + "</strong><span>" + formatDuration(p.durationMs) + " · " + p.swimmers.length + " swimmer" + (p.swimmers.length === 1 ? "" : "s") + "</span>";
+      block.appendChild(head);
+
+      entry.swimmers.forEach(function (s) {
+        var row = document.createElement("div");
+        row.className = "practice-swimmer-row";
+        row.innerHTML =
+          "<span>" + s.name + "</span>" +
+          '<span class="practice-metric">' + s.avgBpm + '<span class="u">avg</span></span>' +
+          '<span class="practice-metric">' + s.maxBpm + '<span class="u">peak</span></span>' +
+          '<span class="practice-metric">' + s.minBpm + '<span class="u">low</span></span>';
+        block.appendChild(row);
+      });
+
+      el.historyList.appendChild(block);
+    });
+  }
+
+  el.historyFilter.addEventListener("input", renderHistory);
+
+  var clearArmed = false;
+  var clearArmTimeout = null;
+  el.clearHistoryBtn.addEventListener("click", function () {
+    if (!clearArmed) {
+      clearArmed = true;
+      el.clearHistoryBtn.textContent = "Confirm clear?";
+      clearArmTimeout = setTimeout(function () {
+        clearArmed = false;
+        el.clearHistoryBtn.textContent = "Clear history";
+      }, 4000);
+      return;
+    }
+    clearTimeout(clearArmTimeout);
+    clearArmed = false;
+    el.clearHistoryBtn.textContent = "Clear history";
+    try { localStorage.removeItem(PRACTICE_STORAGE_KEY); } catch (e) { /* ignore */ }
+    renderHistory();
+  });
+
+  // ---------------------------------------------------------------
+  // Sparkline
+  // ---------------------------------------------------------------
+  var SPARK_W = 84, SPARK_H = 26;
+  function sparklinePath(points) {
+    if (points.length < 2) return "";
+    var bpms = points.map(function (p) { return p.bpm; });
+    var min = Math.min.apply(null, bpms), max = Math.max.apply(null, bpms);
+    if (max === min) { max += 1; min -= 1; }
+    return points.map(function (p, i) {
+      var x = (i / (points.length - 1)) * SPARK_W;
+      var y = SPARK_H - ((p.bpm - min) / (max - min)) * SPARK_H;
+      return (i === 0 ? "M" : "L") + x.toFixed(1) + "," + y.toFixed(1);
+    }).join(" ");
+  }
+
+  // ---------------------------------------------------------------
+  // Row creation / update
+  // ---------------------------------------------------------------
+  var svgNS = "http://www.w3.org/2000/svg";
+
+  function createRow(swimmer) {
+    var tr = document.createElement("tr");
+
+    var tdName = document.createElement("td");
+    var nameInput = document.createElement("input");
+    nameInput.className = "name-input";
+    nameInput.value = swimmer.name;
+    nameInput.setAttribute("aria-label", "Swimmer name");
+    nameInput.addEventListener("input", function () { swimmer.name = nameInput.value; });
+    tdName.appendChild(nameInput);
+
+    var tdStatus = document.createElement("td");
+    var statusWrap = document.createElement("span");
+    statusWrap.className = "status-cell";
+    var dot = document.createElement("span");
+    dot.className = "dot";
+    var statusText = document.createElement("span");
+    statusWrap.appendChild(dot); statusWrap.appendChild(statusText);
+    tdStatus.appendChild(statusWrap);
+
+    var tdBpm = document.createElement("td");
+    var bpmEl = document.createElement("span");
+    bpmEl.className = "bpm-cell";
+    var bpmUnit = document.createElement("span");
+    bpmUnit.className = "bpm-unit"; bpmUnit.textContent = "bpm";
+    tdBpm.appendChild(bpmEl); tdBpm.appendChild(bpmUnit);
+
+    var tdZone = document.createElement("td");
+    var zonePill = document.createElement("span");
+    zonePill.className = "zone-pill";
+    tdZone.appendChild(zonePill);
+
+    var tdSpark = document.createElement("td");
+    var svg = document.createElementNS(svgNS, "svg");
+    svg.setAttribute("class", "spark");
+    svg.setAttribute("width", SPARK_W); svg.setAttribute("height", SPARK_H);
+    svg.setAttribute("viewBox", "0 0 " + SPARK_W + " " + SPARK_H);
+    var path = document.createElementNS(svgNS, "path");
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke-width", "2");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(path);
+    tdSpark.appendChild(svg);
+
+    var tdBatt = document.createElement("td");
+    tdBatt.className = "batt-cell";
+
+    var tdMaxHr = document.createElement("td");
+    var maxHrInput = document.createElement("input");
+    maxHrInput.type = "number"; maxHrInput.className = "maxhr-input";
+    maxHrInput.min = "100"; maxHrInput.max = "230";
+    maxHrInput.setAttribute("aria-label", "Max HR override");
+    maxHrInput.addEventListener("input", function () {
+      var v = parseInt(maxHrInput.value, 10);
+      swimmer.maxHrOverride = (v && v > 60 && v < 240) ? v : null;
+      renderAll();
+    });
+    tdMaxHr.appendChild(maxHrInput);
+
+    var tdActions = document.createElement("td");
+    var removeBtn = document.createElement("button");
+    removeBtn.className = "btn btn-ghost btn-sm";
+    removeBtn.type = "button";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", function () { removeSwimmer(swimmer.id); });
+    tdActions.appendChild(removeBtn);
+
+    tr.appendChild(tdName); tr.appendChild(tdStatus); tr.appendChild(tdBpm);
+    tr.appendChild(tdZone); tr.appendChild(tdSpark); tr.appendChild(tdBatt);
+    tr.appendChild(tdMaxHr); tr.appendChild(tdActions);
+
+    var refs = {
+      tr: tr,
+      els: { dot: dot, statusText: statusText, bpmEl: bpmEl, zonePill: zonePill, path: path, tdBatt: tdBatt, maxHrInput: maxHrInput, nameInput: nameInput }
+    };
+    rows.set(swimmer.id, refs);
+    return refs;
+  }
+
+  function updateRow(swimmer) {
+    var refs = rows.get(swimmer.id) || createRow(swimmer);
+    var els = refs.els;
+
+    // status
+    refs.tr.classList.remove("row-critical");
+    els.dot.className = "dot" + (swimmer.status === "live" ? " live" : swimmer.status === "connecting" ? " connecting" : " off");
+    var statusLabel = { connecting: "Connecting…", live: "Live", disconnected: "Disconnected", error: "Failed to connect" }[swimmer.status] || swimmer.status;
+    if (swimmer.status === "live" && !swimmer.contactOk) statusLabel = "Weak contact";
+    els.statusText.textContent = statusLabel;
+
+    // bpm + zone
+    if (swimmer.status === "live" && swimmer.bpm) {
+      els.bpmEl.textContent = swimmer.bpm;
+      var zoneKey = zoneFor(swimmer.bpm, maxHrFor(swimmer));
+      var varName = ZONE_VAR[zoneKey];
+      els.zonePill.textContent = ZONE_LABEL[zoneKey];
+      els.zonePill.style.background = "var(" + varName + "-soft)";
+      els.zonePill.style.color = "var(" + varName + ")";
+      if (zoneKey === "critical") refs.tr.classList.add("row-critical");
+      els.path.setAttribute("stroke", "var(" + varName + ")");
+    } else {
+      els.bpmEl.textContent = "—";
+      els.zonePill.textContent = "—";
+      els.zonePill.style.background = "var(--surface-2)";
+      els.zonePill.style.color = "var(--ink-muted)";
+      els.path.setAttribute("stroke", "var(--ink-muted)");
+    }
+
+    // sparkline
+    els.path.setAttribute("d", sparklinePath(swimmer.points));
+
+    // battery
+    els.tdBatt.textContent = (swimmer.battery === null || swimmer.battery === undefined) ? "—" : swimmer.battery + "%";
+
+    // max hr placeholder reflects team default when no override set
+    els.maxHrInput.placeholder = String(teamMaxHr());
+    if (document.activeElement !== els.maxHrInput) {
+      els.maxHrInput.value = swimmer.maxHrOverride || "";
+    }
+    if (document.activeElement !== els.nameInput) {
+      els.nameInput.value = swimmer.name;
+    }
+  }
+
+  function sortedIds() {
+    var ids = rosterOrder.slice();
+    if (sortMode === "intensity") {
+      ids.sort(function (a, b) {
+        var sa = swimmers.get(a), sb = swimmers.get(b);
+        var va = (sa.status === "live" && sa.bpm) ? sa.bpm : -1;
+        var vb = (sb.status === "live" && sb.bpm) ? sb.bpm : -1;
+        return vb - va;
+      });
+    }
+    return ids;
+  }
+
+  function renderAll() {
+    var ids = sortedIds();
+    el.emptyState.style.display = ids.length ? "none" : "block";
+    el.rosterTable.style.display = ids.length ? "table" : "none";
+
+    // reconcile row order
+    var frag = document.createDocumentFragment();
+    ids.forEach(function (id) {
+      var swimmer = swimmers.get(id);
+      updateRow(swimmer);
+      frag.appendChild(rows.get(id).tr);
+    });
+    el.rosterBody.appendChild(frag); // moves existing nodes into the new order, no re-creation
+
+    // summary counts
+    var liveSwimmers = ids.map(function (id) { return swimmers.get(id); }).filter(function (s) { return s.status === "live" && s.bpm; });
+    el.connectedCount.innerHTML = ids.filter(function (id) { return swimmers.get(id).status === "live"; }).length + '<span class="u">connected</span>';
+
+    var counts = { good: 0, warning: 0, serious: 0, critical: 0 };
+    liveSwimmers.forEach(function (s) { counts[zoneFor(s.bpm, maxHrFor(s))] += 1; });
+    el.zoneCounts.innerHTML = "";
+    ZONE_ORDER.forEach(function (key) {
+      if (!counts[key]) return;
+      var chip = document.createElement("span");
+      chip.className = "zone-chip";
+      chip.style.background = "var(" + ZONE_VAR[key] + "-soft)";
+      chip.style.color = "var(" + ZONE_VAR[key] + ")";
+      chip.innerHTML = '<span class="swatch" style="background: var(' + ZONE_VAR[key] + ')"></span>' + counts[key] + " " + ZONE_LABEL[key];
+      el.zoneCounts.appendChild(chip);
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // Init
+  // ---------------------------------------------------------------
+  if (!bluetoothSupported()) {
+    el.addBtn.disabled = true;
+    el.addBtn.textContent = "Bluetooth unavailable";
+    el.emptyState.innerHTML = '<strong>Web Bluetooth isn’t available here</strong>Open this page in Chrome or Edge on desktop or Android to pair sensors.';
+  }
+  renderHistory();
+  renderAll();
+})();
+</script>
+</body>
+</html>

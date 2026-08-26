@@ -1,0 +1,1116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lane Pulse</title>
+<meta name="description" content="Live heart rate, HRV, and swim-session history from a Bluetooth heart rate sensor.">
+<meta name="theme-color" content="#128064">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/swimmer-512.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/swimmer-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f6f9f8;
+    --surface: #ffffff;
+    --surface-2: #eef3f1;
+    --ink: #0b1210;
+    --ink-secondary: #4b5854;
+    --ink-muted: #7c8985;
+    --hairline: rgba(11, 18, 16, 0.12);
+    --grid: #dfe6e3;
+    --accent: #128064;
+    --accent-strong: #0d6b53;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(18, 128, 100, 0.10);
+    --chart-line: #2a78d6;
+    --chart-line-soft: rgba(42, 120, 214, 0.12);
+    --good: #0a880a;
+    --warning: #a16a08;
+    --serious: #c0562c;
+    --critical: #c02f2f;
+    --good-soft: rgba(12, 163, 12, 0.10);
+    --warning-soft: rgba(250, 178, 25, 0.16);
+    --serious-soft: rgba(236, 131, 90, 0.16);
+    --critical-soft: rgba(208, 59, 59, 0.10);
+    --shadow: 0 1px 2px rgba(11, 18, 16, 0.04), 0 8px 24px -16px rgba(11, 18, 16, 0.18);
+    --font-ui: 'Manrope', system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #080d0c;
+      --surface: #0f1615;
+      --surface-2: #15201e;
+      --ink: #f2f6f4;
+      --ink-secondary: #b7c3bf;
+      --ink-muted: #7f8c88;
+      --hairline: rgba(255, 255, 255, 0.09);
+      --grid: #1e2b28;
+      --accent: #35c795;
+      --accent-strong: #4fdcaa;
+      --accent-ink: #04140f;
+      --accent-soft: rgba(53, 199, 149, 0.16);
+      --chart-line: #5aa4ec;
+      --chart-line-soft: rgba(90, 164, 236, 0.14);
+      --good: #2fbf2f;
+      --warning: #e0a635;
+      --serious: #e0855e;
+      --critical: #e66767;
+      --good-soft: rgba(47, 191, 47, 0.14);
+      --warning-soft: rgba(224, 166, 53, 0.16);
+      --serious-soft: rgba(224, 133, 94, 0.16);
+      --critical-soft: rgba(230, 103, 103, 0.16);
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -16px rgba(0, 0, 0, 0.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #080d0c;
+    --surface: #0f1615;
+    --surface-2: #15201e;
+    --ink: #f2f6f4;
+    --ink-secondary: #b7c3bf;
+    --ink-muted: #7f8c88;
+    --hairline: rgba(255, 255, 255, 0.09);
+    --grid: #1e2b28;
+    --accent: #35c795;
+    --accent-strong: #4fdcaa;
+    --accent-ink: #04140f;
+    --accent-soft: rgba(53, 199, 149, 0.16);
+    --chart-line: #5aa4ec;
+    --chart-line-soft: rgba(90, 164, 236, 0.14);
+    --good: #2fbf2f;
+    --warning: #e0a635;
+    --serious: #e0855e;
+    --critical: #e66767;
+    --good-soft: rgba(47, 191, 47, 0.14);
+    --warning-soft: rgba(224, 166, 53, 0.16);
+    --serious-soft: rgba(224, 133, 94, 0.16);
+    --critical-soft: rgba(230, 103, 103, 0.16);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -16px rgba(0, 0, 0, 0.6);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font-family: var(--font-ui);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+  a { color: inherit; }
+  button, input { font-family: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 28px 20px 72px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  /* ---------- suite nav ---------- */
+  .suite-nav {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .suite-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ink-secondary);
+    text-decoration: none;
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    padding: 6px 12px;
+    background: var(--surface);
+    transition: border-color 0.15s ease, color 0.15s ease;
+  }
+  .suite-nav a:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ---------- header ---------- */
+  header.top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding-bottom: 4px;
+  }
+  .brand-eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .brand-title {
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    margin: 2px 0 0;
+  }
+  .brand-sub {
+    color: var(--ink-secondary);
+    font-size: 13.5px;
+    margin-top: 4px;
+    max-width: 46ch;
+  }
+  .top-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    appearance: none;
+    border: 1px solid var(--hairline);
+    background: var(--surface);
+    color: var(--ink);
+    font-weight: 600;
+    font-size: 13.5px;
+    padding: 9px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    transition: border-color 0.15s ease, background 0.15s ease, transform 0.05s ease;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn:disabled:hover { border-color: var(--hairline); }
+  .btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-ink);
+  }
+  .btn-primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+  .btn-ghost { background: transparent; }
+  .btn-danger { color: var(--critical); }
+  .btn-danger:hover { border-color: var(--critical); }
+  .btn-sm { padding: 6px 10px; font-size: 12.5px; border-radius: 7px; }
+
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ink-muted);
+    flex: none;
+  }
+  .dot.live { background: var(--good); box-shadow: 0 0 0 3px var(--good-soft); }
+  .dot.demo { background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft); }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12.5px; font-weight: 600; color: var(--ink-secondary);
+    border: 1px solid var(--hairline); border-radius: 999px;
+    padding: 6px 11px 6px 9px;
+    background: var(--surface);
+  }
+
+  /* ---------- hero ---------- */
+  .hero {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    padding: 26px 26px 22px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  .hero-readout { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .bpm-value {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: clamp(56px, 10vw, 92px);
+    line-height: 1;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .bpm-unit {
+    font-family: var(--font-mono);
+    font-size: 16px;
+    color: var(--ink-muted);
+    font-weight: 500;
+  }
+  .hero-meta { display: flex; flex-direction: column; gap: 10px; align-items: flex-end; }
+  .zone-pill {
+    font-size: 12.5px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    padding: 7px 13px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    white-space: nowrap;
+  }
+  .zone-pill .swatch { width: 8px; height: 8px; border-radius: 50%; }
+  .hero-sub { font-size: 12.5px; color: var(--ink-muted); text-align: right; }
+
+  /* ---------- tiles ---------- */
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+  }
+  .tile {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    padding: 14px 16px;
+  }
+  .tile-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+  .tile-value {
+    font-family: var(--font-mono);
+    font-size: 24px;
+    font-weight: 600;
+    margin-top: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .tile-value.small { font-size: 18px; }
+  .tile-hint { font-size: 11.5px; color: var(--ink-muted); margin-top: 3px; }
+
+  /* ---------- chart card ---------- */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    padding: 18px 18px 14px;
+  }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 10px;
+  }
+  .card-title { font-size: 13.5px; font-weight: 700; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-secondary); }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 3px; }
+
+  .chart-shell { position: relative; }
+  svg.chart { width: 100%; height: 220px; display: block; overflow: visible; }
+  .chart-empty {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--ink-muted); font-size: 13px; text-align: center; padding: 0 30px;
+  }
+  .tooltip {
+    position: absolute; pointer-events: none; z-index: 5;
+    background: var(--ink); color: var(--page);
+    font-family: var(--font-mono); font-size: 12px; font-weight: 500;
+    padding: 6px 9px; border-radius: 7px; white-space: nowrap;
+    transform: translate(-50%, -120%);
+    opacity: 0; transition: opacity 0.1s ease;
+  }
+  .tooltip.show { opacity: 1; }
+
+  /* ---------- settings row ---------- */
+  .settings-row {
+    display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-end;
+  }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: 11.5px; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .field input {
+    width: 108px;
+    border: 1px solid var(--hairline);
+    background: var(--surface-2);
+    color: var(--ink);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-family: var(--font-mono);
+    font-size: 14px;
+  }
+  .field-hint { font-size: 11.5px; color: var(--ink-muted); max-width: 34ch; }
+
+  /* ---------- session controls ---------- */
+  .session-bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  }
+  .session-timer {
+    font-family: var(--font-mono); font-size: 18px; font-weight: 600;
+    font-variant-numeric: tabular-nums; color: var(--ink-secondary);
+  }
+  .session-timer.active { color: var(--accent); }
+
+  /* ---------- history ---------- */
+  .history-list { display: flex; flex-direction: column; }
+  .history-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto auto;
+    gap: 14px;
+    align-items: center;
+    padding: 11px 2px;
+    border-top: 1px solid var(--hairline);
+    font-size: 13px;
+  }
+  .history-row:first-child { border-top: none; }
+  .history-date { color: var(--ink-secondary); }
+  .history-metric { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+  .history-metric .u { color: var(--ink-muted); font-family: var(--font-ui); font-size: 10.5px; margin-left: 3px; }
+  .history-empty { color: var(--ink-muted); font-size: 13px; padding: 6px 2px 2px; }
+
+  footer.note {
+    font-size: 12px; color: var(--ink-muted); text-align: center; line-height: 1.6;
+    padding-top: 6px;
+  }
+  footer.note code { font-family: var(--font-mono); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+
+  @media (max-width: 480px) {
+    .hero { flex-direction: column; align-items: flex-start; }
+    .hero-meta { align-items: flex-start; }
+    .hero-sub { text-align: left; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav class="suite-nav"><a href="coach.html">Coach view &rarr;</a></nav>
+
+  <header class="top">
+    <div>
+      <div class="brand-eyebrow">Polar Verity Sense &middot; Web Bluetooth</div>
+      <h1 class="brand-title">Lane Pulse</h1>
+      <p class="brand-sub">Live heart rate, HRV, and swim-session history straight from your sensor. Everything stays in this browser &mdash; nothing is uploaded anywhere.</p>
+    </div>
+    <div class="top-actions">
+      <span class="status-pill" id="statusPill"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></span>
+      <button class="btn btn-ghost btn-sm" id="demoBtn" type="button">Try demo data</button>
+      <button class="btn btn-primary" id="connectBtn" type="button">Pair sensor</button>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="hero-readout">
+      <span class="bpm-value" id="bpmValue">&mdash;</span>
+      <span class="bpm-unit">bpm</span>
+    </div>
+    <div class="hero-meta">
+      <span class="zone-pill" id="zonePill" style="background: var(--surface-2); color: var(--ink-muted);">
+        <span class="swatch" style="background: var(--ink-muted);"></span>
+        <span id="zoneLabel">Waiting for signal</span>
+      </span>
+      <span class="hero-sub" id="heroSub">Pair your sensor or try demo data to begin</span>
+    </div>
+  </section>
+
+  <section class="tiles">
+    <div class="tile">
+      <div class="tile-label">HRV &middot; rMSSD</div>
+      <div class="tile-value small" id="hrvValue">&mdash;</div>
+      <div class="tile-hint">last 30 beats</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Session avg</div>
+      <div class="tile-value small" id="avgValue">&mdash;</div>
+      <div class="tile-hint">bpm</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Session peak</div>
+      <div class="tile-value small" id="maxValue">&mdash;</div>
+      <div class="tile-hint">bpm</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Battery</div>
+      <div class="tile-value small" id="battValue">&mdash;</div>
+      <div class="tile-hint" id="battHint">sensor level</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="card-title">Live heart rate</span>
+      <div class="legend">
+        <span class="legend-item"><span class="legend-swatch" style="background: var(--good);"></span>Easy</span>
+        <span class="legend-item"><span class="legend-swatch" style="background: var(--warning);"></span>Aerobic</span>
+        <span class="legend-item"><span class="legend-swatch" style="background: var(--serious);"></span>Threshold</span>
+        <span class="legend-item"><span class="legend-swatch" style="background: var(--critical);"></span>Max effort</span>
+      </div>
+    </div>
+    <div class="chart-shell" id="chartShell">
+      <svg class="chart" id="chartSvg" viewBox="0 0 760 220" preserveAspectRatio="none" role="img" aria-label="Live heart rate over time"></svg>
+      <div class="chart-empty" id="chartEmpty">No readings yet &mdash; connect a sensor or start the demo to see your live trace here.</div>
+      <div class="tooltip" id="chartTooltip"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><span class="card-title">Zone calibration</span></div>
+    <div class="settings-row">
+      <div class="field">
+        <label for="maxHrInput">Max HR</label>
+        <input type="number" id="maxHrInput" min="100" max="230" placeholder="190">
+      </div>
+      <div class="field">
+        <label for="ageInput">Age (optional)</label>
+        <input type="number" id="ageInput" min="8" max="100" placeholder="&mdash;">
+      </div>
+      <p class="field-hint">Zones are set as a percentage of max HR (the common 220&minus;age estimate, or enter your own). This is a training heuristic, not a medical measurement.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="card-title">Session</span>
+      <div class="session-bar" style="flex:1; justify-content:flex-end;">
+        <span class="session-timer" id="sessionTimer">00:00</span>
+        <button class="btn btn-primary btn-sm" id="sessionBtn" type="button">Start session</button>
+      </div>
+    </div>
+    <div class="card-head" style="margin-top:2px; margin-bottom: 0;"><span class="card-title" style="font-size:12px; color: var(--ink-muted); font-weight:700;">History</span></div>
+    <div class="history-list" id="historyList">
+      <div class="history-empty">No saved sessions yet.</div>
+    </div>
+  </section>
+
+  <footer class="note">
+    Web Bluetooth needs Chrome or Edge on desktop or Android, over HTTPS &mdash; it isn&rsquo;t supported in Safari or iOS browsers.<br>
+    Works with the Polar Verity Sense and any other sensor that broadcasts the standard <code>heart_rate</code> BLE service.
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------
+  var STORAGE_KEY = "lanePulse.sessions.v1";
+  var PREFS_KEY = "lanePulse.prefs.v1";
+  var MAX_POINTS = 180;         // rolling chart window
+  var RR_WINDOW = 30;           // beats used for rMSSD
+
+  var state = {
+    connected: false,
+    mode: null,                 // 'live' | 'demo' | null
+    device: null,
+    hrChar: null,
+    points: [],                 // {t: ms since start, bpm}
+    rr: [],                     // rolling RR intervals (ms)
+    maxHr: null,
+    sessionActive: false,
+    sessionStart: null,
+    sessionReadings: [],        // bpm values recorded during the active session
+    streamStart: null,
+    demoTimer: null,
+    demoBpm: 95
+  };
+
+  // ---------------------------------------------------------------
+  // Elements
+  // ---------------------------------------------------------------
+  var el = {
+    connectBtn: document.getElementById("connectBtn"),
+    demoBtn: document.getElementById("demoBtn"),
+    statusDot: document.getElementById("statusDot"),
+    statusText: document.getElementById("statusText"),
+    bpmValue: document.getElementById("bpmValue"),
+    zonePill: document.getElementById("zonePill"),
+    zoneLabel: document.getElementById("zoneLabel"),
+    heroSub: document.getElementById("heroSub"),
+    hrvValue: document.getElementById("hrvValue"),
+    avgValue: document.getElementById("avgValue"),
+    maxValue: document.getElementById("maxValue"),
+    battValue: document.getElementById("battValue"),
+    battHint: document.getElementById("battHint"),
+    chartSvg: document.getElementById("chartSvg"),
+    chartEmpty: document.getElementById("chartEmpty"),
+    chartShell: document.getElementById("chartShell"),
+    chartTooltip: document.getElementById("chartTooltip"),
+    maxHrInput: document.getElementById("maxHrInput"),
+    ageInput: document.getElementById("ageInput"),
+    sessionBtn: document.getElementById("sessionBtn"),
+    sessionTimer: document.getElementById("sessionTimer"),
+    historyList: document.getElementById("historyList")
+  };
+
+  // ---------------------------------------------------------------
+  // Prefs (max HR / age) persistence
+  // ---------------------------------------------------------------
+  function loadPrefs() {
+    try {
+      var raw = localStorage.getItem(PREFS_KEY);
+      if (!raw) return;
+      var prefs = JSON.parse(raw);
+      if (prefs.maxHr) { el.maxHrInput.value = prefs.maxHr; state.maxHr = prefs.maxHr; }
+      if (prefs.age) { el.ageInput.value = prefs.age; }
+    } catch (e) { /* storage unavailable — ignore, fall back to defaults */ }
+  }
+  function savePrefs() {
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify({
+        maxHr: state.maxHr,
+        age: el.ageInput.value || null
+      }));
+    } catch (e) { /* ignore */ }
+  }
+  el.maxHrInput.addEventListener("input", function () {
+    var v = parseInt(el.maxHrInput.value, 10);
+    state.maxHr = (v && v > 60 && v < 240) ? v : null;
+    savePrefs();
+    renderChart();
+    updateHero(currentBpm());
+  });
+  el.ageInput.addEventListener("input", function () {
+    var age = parseInt(el.ageInput.value, 10);
+    if (age && age > 5 && age < 110 && !el.maxHrInput.value) {
+      var estimate = 220 - age;
+      el.maxHrInput.value = estimate;
+      state.maxHr = estimate;
+      renderChart();
+      updateHero(currentBpm());
+    }
+    savePrefs();
+  });
+
+  function effectiveMaxHr() { return state.maxHr || 190; }
+
+  // ---------------------------------------------------------------
+  // Zones — four bands mapped to the reserved status colors
+  // ---------------------------------------------------------------
+  function zoneFor(bpm) {
+    var pct = bpm / effectiveMaxHr();
+    if (pct < 0.6) return { key: "good", label: "Easy" };
+    if (pct < 0.75) return { key: "warning", label: "Aerobic" };
+    if (pct < 0.88) return { key: "serious", label: "Threshold" };
+    return { key: "critical", label: "Max effort" };
+  }
+  var ZONE_VAR = { good: "--good", warning: "--warning", serious: "--serious", critical: "--critical" };
+
+  function currentBpm() {
+    if (!state.points.length) return null;
+    return state.points[state.points.length - 1].bpm;
+  }
+
+  // ---------------------------------------------------------------
+  // Web Bluetooth
+  // ---------------------------------------------------------------
+  function bluetoothSupported() {
+    return !!(navigator.bluetooth && window.isSecureContext);
+  }
+
+  function parseHeartRateMeasurement(dataView) {
+    var flags = dataView.getUint8(0);
+    var rate16Bits = (flags & 0x1) !== 0;
+    var contactSupported = (flags & 0x4) !== 0;
+    var contactDetected = (flags & 0x2) !== 0;
+    var energyPresent = (flags & 0x8) !== 0;
+    var rrPresent = (flags & 0x10) !== 0;
+
+    var offset = 1;
+    var heartRate;
+    if (rate16Bits) {
+      heartRate = dataView.getUint16(offset, true);
+      offset += 2;
+    } else {
+      heartRate = dataView.getUint8(offset);
+      offset += 1;
+    }
+    if (energyPresent) { offset += 2; } // energy expended — not surfaced in this dashboard
+
+    var rrIntervals = [];
+    if (rrPresent) {
+      while (offset + 1 < dataView.byteLength) {
+        var rrRaw = dataView.getUint16(offset, true); // units of 1/1024 second
+        rrIntervals.push((rrRaw / 1024) * 1000);       // -> milliseconds
+        offset += 2;
+      }
+    }
+    return {
+      heartRate: heartRate,
+      contactSupported: contactSupported,
+      contactDetected: contactDetected,
+      rrIntervals: rrIntervals
+    };
+  }
+
+  function onHrNotification(evt) {
+    var reading = parseHeartRateMeasurement(evt.target.value);
+    ingestReading(reading.heartRate, reading.rrIntervals, {
+      contactSupported: reading.contactSupported,
+      contactDetected: reading.contactDetected
+    });
+  }
+
+  async function connectSensor() {
+    if (!bluetoothSupported()) {
+      setStatus("Web Bluetooth isn't available in this browser", "idle");
+      return;
+    }
+    if (state.mode === "demo") stopDemo();
+
+    try {
+      setStatus("Requesting device…", "idle");
+      var device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: ["heart_rate"] }],
+        optionalServices: ["battery_service"]
+      });
+      state.device = device;
+      device.addEventListener("gattserverdisconnected", onDisconnected);
+
+      setStatus("Connecting…", "idle");
+      var server = await device.gatt.connect();
+
+      var hrService = await server.getPrimaryService("heart_rate");
+      var hrChar = await hrService.getCharacteristic("heart_rate_measurement");
+      state.hrChar = hrChar;
+      await hrChar.startNotifications();
+      hrChar.addEventListener("characteristicvaluechanged", onHrNotification);
+
+      startStream("live");
+      setStatus(device.name || "Sensor connected", "live");
+      el.connectBtn.textContent = "Disconnect";
+
+      // Battery is optional — some firmware only exposes it outside an active HR stream.
+      try {
+        var battService = await server.getPrimaryService("battery_service");
+        var battChar = await battService.getCharacteristic("battery_level");
+        var battValue = await battChar.readValue();
+        setBattery(battValue.getUint8(0));
+      } catch (battErr) {
+        el.battHint.textContent = "unavailable";
+      }
+    } catch (err) {
+      if (err && err.name === "NotFoundError") {
+        setStatus("Not connected", "idle");
+      } else {
+        setStatus("Connection failed — try again", "idle");
+      }
+    }
+  }
+
+  function disconnectSensor() {
+    if (state.device && state.device.gatt.connected) {
+      state.device.gatt.disconnect();
+    } else {
+      onDisconnected();
+    }
+  }
+
+  function onDisconnected() {
+    state.device = null;
+    state.hrChar = null;
+    stopStream();
+    setStatus("Not connected", "idle");
+    el.connectBtn.textContent = "Pair sensor";
+  }
+
+  el.connectBtn.addEventListener("click", function () {
+    if (state.mode === "live") { disconnectSensor(); }
+    else { connectSensor(); }
+  });
+
+  // ---------------------------------------------------------------
+  // Demo mode — synthetic data so the dashboard works with no hardware
+  // ---------------------------------------------------------------
+  function startDemo() {
+    if (state.mode === "live") disconnectSensor();
+    startStream("demo");
+    state.demoBpm = 92;
+    var tick = 0;
+    state.demoTimer = setInterval(function () {
+      tick += 1;
+      // gentle interval-training pattern: base drift + periodic surges + noise
+      var surge = Math.sin(tick / 22) * 28;
+      var noise = (Math.sin(tick * 12.9) * 43758.5453 % 1) * 6 - 3;
+      var target = 98 + surge + noise;
+      state.demoBpm += (target - state.demoBpm) * 0.18;
+      var bpm = Math.max(58, Math.round(state.demoBpm));
+      var rrMs = 60000 / bpm;
+      var rr = [rrMs + (Math.sin(tick * 7.3) * 12), rrMs + (Math.sin(tick * 3.1) * 9)];
+      ingestReading(bpm, rr, { contactSupported: true, contactDetected: true });
+    }, 1000);
+    setStatus("Demo data running", "demo");
+    el.demoBtn.textContent = "Stop demo";
+    setBattery(null);
+    el.battHint.textContent = "n/a in demo";
+  }
+  function stopDemo() {
+    if (state.demoTimer) { clearInterval(state.demoTimer); state.demoTimer = null; }
+    stopStream();
+    setStatus("Not connected", "idle");
+    el.demoBtn.textContent = "Try demo data";
+  }
+  el.demoBtn.addEventListener("click", function () {
+    if (state.mode === "demo") stopDemo(); else startDemo();
+  });
+
+  // ---------------------------------------------------------------
+  // Shared ingest pipeline (used by both live BLE and demo mode)
+  // ---------------------------------------------------------------
+  function startStream(mode) {
+    state.mode = mode;
+    state.connected = true;
+    state.points = [];
+    state.rr = [];
+    state.streamStart = Date.now();
+    el.chartEmpty.style.display = "none";
+  }
+  function stopStream() {
+    state.mode = null;
+    state.connected = false;
+    el.bpmValue.textContent = "—";
+    el.zoneLabel.textContent = "Waiting for signal";
+    el.zonePill.style.background = "var(--surface-2)";
+    el.zonePill.style.color = "var(--ink-muted)";
+    el.zonePill.querySelector(".swatch").style.background = "var(--ink-muted)";
+    el.heroSub.textContent = "Pair your sensor or try demo data to begin";
+    if (state.sessionActive) endSession(); // don't leave an orphaned session running
+  }
+
+  function setStatus(text, kind) {
+    el.statusText.textContent = text;
+    el.statusDot.className = "dot" + (kind === "live" ? " live" : kind === "demo" ? " demo" : "");
+  }
+  function setBattery(level) {
+    if (level === null || level === undefined) { el.battValue.textContent = "—"; return; }
+    el.battValue.textContent = level + "%";
+    el.battHint.textContent = "sensor level";
+  }
+
+  function ingestReading(bpm, rrIntervals, contact) {
+    if (!bpm || bpm < 25 || bpm > 240) return; // discard obvious glitches
+    var t = Date.now() - state.streamStart;
+    state.points.push({ t: t, bpm: bpm });
+    if (state.points.length > MAX_POINTS) state.points.shift();
+
+    if (rrIntervals && rrIntervals.length) {
+      state.rr = state.rr.concat(rrIntervals);
+      if (state.rr.length > RR_WINDOW) state.rr = state.rr.slice(state.rr.length - RR_WINDOW);
+    }
+
+    if (state.sessionActive) state.sessionReadings.push(bpm);
+
+    updateHero(bpm, contact);
+    updateTiles();
+    renderChart();
+  }
+
+  function rmssd(rr) {
+    if (rr.length < 2) return null;
+    var sumSq = 0;
+    for (var i = 1; i < rr.length; i++) {
+      var d = rr[i] - rr[i - 1];
+      sumSq += d * d;
+    }
+    return Math.sqrt(sumSq / (rr.length - 1));
+  }
+
+  function updateHero(bpm, contact) {
+    if (bpm === null || bpm === undefined) return;
+    el.bpmValue.textContent = bpm;
+    var zone = zoneFor(bpm);
+    var varName = ZONE_VAR[zone.key];
+    el.zonePill.style.background = "var(" + varName + "-soft)";
+    el.zonePill.style.color = "var(" + varName + ")";
+    el.zonePill.querySelector(".swatch").style.background = "var(" + varName + ")";
+    el.zoneLabel.textContent = zone.label + " · " + Math.round((bpm / effectiveMaxHr()) * 100) + "% max";
+    if (contact && contact.contactSupported && !contact.contactDetected) {
+      el.heroSub.textContent = "Weak sensor contact — reseat the strap";
+    } else {
+      el.heroSub.textContent = state.mode === "demo" ? "Simulated reading" : "Live from sensor";
+    }
+  }
+
+  function updateTiles() {
+    var hrv = rmssd(state.rr);
+    el.hrvValue.textContent = hrv ? Math.round(hrv) + " ms" : "—";
+    if (state.sessionReadings.length) {
+      var sum = state.sessionReadings.reduce(function (a, b) { return a + b; }, 0);
+      el.avgValue.textContent = Math.round(sum / state.sessionReadings.length);
+      el.maxValue.textContent = Math.max.apply(null, state.sessionReadings);
+    } else {
+      el.avgValue.textContent = "—";
+      el.maxValue.textContent = "—";
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Chart — SVG line with zone bands, gridlines, hover tooltip
+  // ---------------------------------------------------------------
+  var svgNS = "http://www.w3.org/2000/svg";
+  var CHART_W = 760, CHART_H = 220, PAD_L = 34, PAD_R = 8, PAD_T = 10, PAD_B = 20;
+
+  function renderChart() {
+    var svg = el.chartSvg;
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    if (!state.points.length) { el.chartEmpty.style.display = "flex"; return; }
+    el.chartEmpty.style.display = "none";
+
+    var maxHr = effectiveMaxHr();
+    var bpms = state.points.map(function (p) { return p.bpm; });
+    var dataMin = Math.min.apply(null, bpms);
+    var dataMax = Math.max.apply(null, bpms);
+    var yMin = Math.min(50, dataMin - 10);
+    var yMax = Math.max(maxHr * 1.05, dataMax + 10);
+
+    var innerW = CHART_W - PAD_L - PAD_R;
+    var innerH = CHART_H - PAD_T - PAD_B;
+
+    function xFor(i) {
+      if (state.points.length === 1) return PAD_L;
+      return PAD_L + (i / (state.points.length - 1)) * innerW;
+    }
+    function yFor(bpm) {
+      var pct = (bpm - yMin) / (yMax - yMin);
+      return PAD_T + innerH - pct * innerH;
+    }
+    function yForPct(pct) { return yFor(maxHr * pct); }
+
+    // zone bands
+    var bands = [
+      { from: 0, to: 0.6, varName: "--good" },
+      { from: 0.6, to: 0.75, varName: "--warning" },
+      { from: 0.75, to: 0.88, varName: "--serious" },
+      { from: 0.88, to: yMax / maxHr, varName: "--critical" }
+    ];
+    bands.forEach(function (b) {
+      var yTop = Math.max(yForPct(b.to), PAD_T);
+      var yBot = Math.min(yForPct(b.from), PAD_T + innerH);
+      if (yBot <= yTop) return;
+      var rect = document.createElementNS(svgNS, "rect");
+      rect.setAttribute("x", PAD_L);
+      rect.setAttribute("y", yTop);
+      rect.setAttribute("width", innerW);
+      rect.setAttribute("height", Math.max(0, yBot - yTop));
+      rect.setAttribute("fill", "var(" + b.varName + "-soft)");
+      svg.appendChild(rect);
+    });
+
+    // gridlines every 20bpm
+    var gridStep = 20;
+    var gStart = Math.ceil(yMin / gridStep) * gridStep;
+    for (var g = gStart; g <= yMax; g += gridStep) {
+      var y = yFor(g);
+      var line = document.createElementNS(svgNS, "line");
+      line.setAttribute("x1", PAD_L); line.setAttribute("x2", CHART_W - PAD_R);
+      line.setAttribute("y1", y); line.setAttribute("y2", y);
+      line.setAttribute("stroke", "var(--grid)");
+      line.setAttribute("stroke-width", "1");
+      svg.appendChild(line);
+      var label = document.createElementNS(svgNS, "text");
+      label.setAttribute("x", PAD_L - 6);
+      label.setAttribute("y", y + 3);
+      label.setAttribute("text-anchor", "end");
+      label.setAttribute("font-size", "9");
+      label.setAttribute("font-family", "var(--font-mono)");
+      label.setAttribute("fill", "var(--ink-muted)");
+      label.textContent = g;
+      svg.appendChild(label);
+    }
+
+    // line path
+    var d = state.points.map(function (p, i) {
+      return (i === 0 ? "M" : "L") + xFor(i).toFixed(1) + "," + yFor(p.bpm).toFixed(1);
+    }).join(" ");
+    var path = document.createElementNS(svgNS, "path");
+    path.setAttribute("d", d);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "var(--chart-line)");
+    path.setAttribute("stroke-width", "2");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(path);
+
+    // emphasized endpoint
+    var last = state.points[state.points.length - 1];
+    var lastZone = zoneFor(last.bpm);
+    var dot = document.createElementNS(svgNS, "circle");
+    dot.setAttribute("cx", xFor(state.points.length - 1));
+    dot.setAttribute("cy", yFor(last.bpm));
+    dot.setAttribute("r", "4.5");
+    dot.setAttribute("fill", "var(" + ZONE_VAR[lastZone.key] + ")");
+    dot.setAttribute("stroke", "var(--surface)");
+    dot.setAttribute("stroke-width", "2");
+    svg.appendChild(dot);
+
+    // hover capture layer
+    var capture = document.createElementNS(svgNS, "rect");
+    capture.setAttribute("x", 0); capture.setAttribute("y", 0);
+    capture.setAttribute("width", CHART_W); capture.setAttribute("height", CHART_H);
+    capture.setAttribute("fill", "transparent");
+    capture.addEventListener("mousemove", function (evt) { handleHover(evt, xFor, yFor); });
+    capture.addEventListener("mouseleave", hideTooltip);
+    svg.appendChild(capture);
+  }
+
+  var crosshairEls = null;
+  function ensureCrosshair() {
+    if (crosshairEls) return crosshairEls;
+    var line = document.createElementNS(svgNS, "line");
+    line.setAttribute("stroke", "var(--ink-muted)");
+    line.setAttribute("stroke-width", "1");
+    line.setAttribute("stroke-dasharray", "3,3");
+    line.style.display = "none";
+    el.chartSvg.appendChild(line);
+    var dot = document.createElementNS(svgNS, "circle");
+    dot.setAttribute("r", "4");
+    dot.setAttribute("fill", "var(--chart-line)");
+    dot.setAttribute("stroke", "var(--surface)");
+    dot.setAttribute("stroke-width", "2");
+    dot.style.display = "none";
+    el.chartSvg.appendChild(dot);
+    crosshairEls = { line: line, dot: dot };
+    return crosshairEls;
+  }
+
+  function handleHover(evt, xFor, yFor) {
+    if (!state.points.length) return;
+    var rect = el.chartSvg.getBoundingClientRect();
+    var relX = (evt.clientX - rect.left) / rect.width * CHART_W;
+    var idx = Math.round(((relX - PAD_L) / (CHART_W - PAD_L - PAD_R)) * (state.points.length - 1));
+    idx = Math.max(0, Math.min(state.points.length - 1, idx));
+    var p = state.points[idx];
+    var cx = xFor(idx), cy = yFor(p.bpm);
+
+    var c = ensureCrosshair();
+    c.line.setAttribute("x1", cx); c.line.setAttribute("x2", cx);
+    c.line.setAttribute("y1", PAD_T); c.line.setAttribute("y2", CHART_H - PAD_B);
+    c.line.style.display = "block";
+    c.dot.setAttribute("cx", cx); c.dot.setAttribute("cy", cy);
+    c.dot.style.display = "block";
+
+    var secAgo = Math.round((state.points[state.points.length - 1].t - p.t) / 1000);
+    el.chartTooltip.textContent = p.bpm + " bpm · " + (secAgo === 0 ? "now" : secAgo + "s ago");
+    var shellRect = el.chartShell.getBoundingClientRect();
+    var svgRect = el.chartSvg.getBoundingClientRect();
+    var px = svgRect.left - shellRect.left + (cx / CHART_W) * svgRect.width;
+    var py = svgRect.top - shellRect.top + (cy / CHART_H) * svgRect.height;
+    el.chartTooltip.style.left = px + "px";
+    el.chartTooltip.style.top = py + "px";
+    el.chartTooltip.classList.add("show");
+  }
+  function hideTooltip() {
+    el.chartTooltip.classList.remove("show");
+    if (crosshairEls) { crosshairEls.line.style.display = "none"; crosshairEls.dot.style.display = "none"; }
+  }
+
+  // ---------------------------------------------------------------
+  // Session recording + history
+  // ---------------------------------------------------------------
+  function formatDuration(ms) {
+    var totalSec = Math.floor(ms / 1000);
+    var m = Math.floor(totalSec / 60);
+    var s = totalSec % 60;
+    return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  var timerInterval = null;
+  function startSession() {
+    state.sessionActive = true;
+    state.sessionStart = Date.now();
+    state.sessionReadings = [];
+    el.sessionBtn.textContent = "End session";
+    el.sessionBtn.classList.add("btn-danger");
+    el.sessionTimer.classList.add("active");
+    timerInterval = setInterval(function () {
+      el.sessionTimer.textContent = formatDuration(Date.now() - state.sessionStart);
+    }, 1000);
+  }
+  function endSession() {
+    if (!state.sessionActive) return;
+    state.sessionActive = false;
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    el.sessionBtn.textContent = "Start session";
+    el.sessionBtn.classList.remove("btn-danger");
+    el.sessionTimer.classList.remove("active");
+
+    var duration = Date.now() - state.sessionStart;
+    if (state.sessionReadings.length >= 3 && duration > 5000) {
+      var sum = state.sessionReadings.reduce(function (a, b) { return a + b; }, 0);
+      saveSession({
+        endedAt: Date.now(),
+        durationMs: duration,
+        avgBpm: Math.round(sum / state.sessionReadings.length),
+        maxBpm: Math.max.apply(null, state.sessionReadings),
+        minBpm: Math.min.apply(null, state.sessionReadings),
+        mode: state.mode
+      });
+    }
+    el.sessionTimer.textContent = "00:00";
+  }
+  el.sessionBtn.addEventListener("click", function () {
+    if (state.sessionActive) endSession(); else startSession();
+  });
+
+  function loadSessions() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  }
+  function saveSession(session) {
+    var sessions = loadSessions();
+    sessions.unshift(session);
+    if (sessions.length > 40) sessions = sessions.slice(0, 40);
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions)); } catch (e) { /* storage full or unavailable */ }
+    renderHistory();
+  }
+  function renderHistory() {
+    var sessions = loadSessions();
+    el.historyList.innerHTML = "";
+    if (!sessions.length) {
+      el.historyList.innerHTML = '<div class="history-empty">No saved sessions yet.</div>';
+      return;
+    }
+    sessions.forEach(function (s) {
+      var row = document.createElement("div");
+      row.className = "history-row";
+      var d = new Date(s.endedAt);
+      var dateStr = d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+        " · " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+      row.innerHTML =
+        '<span class="history-date">' + dateStr + (s.mode === "demo" ? " (demo)" : "") + '</span>' +
+        '<span class="history-metric">' + formatDuration(s.durationMs) + '<span class="u">min</span></span>' +
+        '<span class="history-metric">' + s.avgBpm + '<span class="u">avg</span></span>' +
+        '<span class="history-metric">' + s.maxBpm + '<span class="u">peak</span></span>' +
+        '<button class="btn btn-ghost btn-sm" type="button" aria-label="Copy session summary">Copy</button>';
+      row.querySelector("button").addEventListener("click", function () {
+        var text = dateStr + " — " + formatDuration(s.durationMs) + ", avg " + s.avgBpm +
+          " bpm, peak " + s.maxBpm + " bpm, low " + s.minBpm + " bpm";
+        if (navigator.clipboard) navigator.clipboard.writeText(text).catch(function () {});
+      });
+      el.historyList.appendChild(row);
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // Init
+  // ---------------------------------------------------------------
+  loadPrefs();
+  renderHistory();
+  if (!bluetoothSupported()) {
+    el.connectBtn.disabled = true;
+    el.connectBtn.textContent = "Bluetooth unavailable";
+    el.heroSub.textContent = "This browser can't use Web Bluetooth — try demo data instead";
+  }
+})();
+</script>
+</body>
+</html>
