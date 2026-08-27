@@ -363,6 +363,16 @@
 
   <div class="card">
     <div class="card-head-row">
+      <span class="card-title">Synced practice history</span>
+      <button class="btn btn-ghost btn-sm" id="refreshSyncedHistoryBtn" type="button">Refresh</button>
+    </div>
+    <div class="history-list" id="syncedHistoryList">
+      <div class="history-empty">Connect the backend above to load synced practices.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head-row">
       <div>
         <span class="card-title">Practice</span>
         <span class="practice-hint" id="practiceHint">Not started — start a practice to log everyone's readings into history below.</span>
@@ -469,7 +479,9 @@
     apiStatusText: document.getElementById("apiStatusText"),
     teamRosterList: document.getElementById("teamRosterList"),
     newRosterNameInput: document.getElementById("newRosterNameInput"),
-    addRosterSwimmerBtn: document.getElementById("addRosterSwimmerBtn")
+    addRosterSwimmerBtn: document.getElementById("addRosterSwimmerBtn"),
+    syncedHistoryList: document.getElementById("syncedHistoryList"),
+    refreshSyncedHistoryBtn: document.getElementById("refreshSyncedHistoryBtn")
   };
 
   function bluetoothSupported() { return !!(navigator.bluetooth && window.isSecureContext); }
@@ -703,10 +715,74 @@
         el.apiStatusText.textContent = "Connected — " + teamRoster.length + " swimmer" + (teamRoster.length === 1 ? "" : "s") + " on the team roster.";
         renderTeamRoster();
         renderAll(); // refresh the roster-link dropdowns in the live pairing table
+        fetchSyncedHistory();
       })
       .catch(function (err) {
         el.apiStatusText.textContent = "Connection failed — check the API URL and coach key (" + err.message + ").";
       });
+  }
+
+  function fetchSyncedHistory() {
+    if (!apiConfig.baseUrl || !apiConfig.coachKey) return;
+    apiFetch("/practices")
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function (data) { renderSyncedHistory(data.practices || []); })
+      .catch(function (err) {
+        el.syncedHistoryList.innerHTML = '<div class="history-empty">Couldn’t load synced history (' + err.message + ').</div>';
+      });
+  }
+  el.refreshSyncedHistoryBtn.addEventListener("click", fetchSyncedHistory);
+
+  function renderSyncedHistory(rows) {
+    el.syncedHistoryList.innerHTML = "";
+    if (!rows.length) {
+      el.syncedHistoryList.innerHTML = '<div class="history-empty">No synced practices yet.</div>';
+      return;
+    }
+
+    // Each row is one swimmer's session; group rows sharing a date + start
+    // time back into "one practice" blocks, since that's how they were
+    // logically pushed together from a single End practice click.
+    var groups = [];
+    var groupIndex = {};
+    rows.forEach(function (r) {
+      var key = r.session_date + "|" + (r.start_time || "");
+      if (!(key in groupIndex)) {
+        groupIndex[key] = groups.length;
+        groups.push({ session_date: r.session_date, location: r.location, swimmers: [] });
+      }
+      groups[groupIndex[key]].swimmers.push(r);
+    });
+
+    groups.forEach(function (g) {
+      var block = document.createElement("div");
+      block.className = "practice-block";
+
+      var head = document.createElement("div");
+      head.className = "practice-block-head";
+      var d = new Date(g.session_date);
+      var dateStr = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+      head.innerHTML = "<strong>" + dateStr + "</strong><span>" +
+        (g.location ? g.location + " · " : "") + g.swimmers.length + " swimmer" + (g.swimmers.length === 1 ? "" : "s") +
+        "</span>";
+      block.appendChild(head);
+
+      g.swimmers.forEach(function (s) {
+        var row = document.createElement("div");
+        row.className = "practice-swimmer-row";
+        row.innerHTML =
+          "<span>" + s.swimmer_name + "</span>" +
+          '<span class="practice-metric">' + (s.avg_bpm != null ? s.avg_bpm : "—") + '<span class="u">avg</span></span>' +
+          '<span class="practice-metric">' + (s.hrv_rmssd != null ? Math.round(s.hrv_rmssd) : "—") + '<span class="u">hrv</span></span>' +
+          '<span class="practice-metric">' + (s.trimp != null ? s.trimp : "—") + '<span class="u">load</span></span>';
+        block.appendChild(row);
+      });
+
+      el.syncedHistoryList.appendChild(block);
+    });
   }
 
   function createRosterSwimmer() {

@@ -183,6 +183,43 @@ async function handleGetSwimmerSummary(token: string, env: Env): Promise<Respons
 }
 
 // ---------------------------------------------------------------
+// GET /practices -- coach-only, recent synced practices across the whole
+// roster (distinct from coach.html's local-only practice history, which
+// reads a different, unsynced localStorage record)
+// ---------------------------------------------------------------
+async function handleGetPractices(request: Request, env: Env): Promise<Response> {
+  const authFail = requireCoachAuth(request, env);
+  if (authFail) return authFail;
+
+  const client = createClient(env);
+  try {
+    await client.connect();
+    const result = await client.query(
+      `SELECT s.session_id, s.swimmer_id, sw.name AS swimmer_name,
+              s.session_date, s.coach, s.location, s.start_time, s.end_time,
+              h.avg_bpm, h.max_bpm, h.min_bpm, h.hrv_rmssd,
+              h.zone_seconds_easy, h.zone_seconds_aerobic, h.zone_seconds_threshold, h.zone_seconds_max,
+              ROUND(
+                (COALESCE(h.zone_seconds_easy, 0) / 60.0 * 1) +
+                (COALESCE(h.zone_seconds_aerobic, 0) / 60.0 * 2) +
+                (COALESCE(h.zone_seconds_threshold, 0) / 60.0 * 3) +
+                (COALESCE(h.zone_seconds_max, 0) / 60.0 * 4)
+              , 1) AS trimp
+       FROM swim_sessions s
+       JOIN swimmers sw ON sw.swimmer_id = s.swimmer_id
+       LEFT JOIN swim_hr_data h ON h.session_id = s.session_id
+       ORDER BY s.session_date DESC, s.start_time DESC
+       LIMIT 100`
+    );
+    return json({ practices: result.rows });
+  } catch (err) {
+    return json({ error: "database error", detail: String(err) }, 500);
+  } finally {
+    await client.end();
+  }
+}
+
+// ---------------------------------------------------------------
 // GET /roster -- coach-only, full roster + share links
 // ---------------------------------------------------------------
 async function handleGetRoster(request: Request, env: Env): Promise<Response> {
@@ -352,6 +389,9 @@ export default {
     }
     if (path === "/practices" && request.method === "POST") {
       return handlePostPractices(request, env);
+    }
+    if (path === "/practices" && request.method === "GET") {
+      return handleGetPractices(request, env);
     }
     if (path === "/roster" && request.method === "GET") {
       return handleGetRoster(request, env);

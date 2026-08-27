@@ -56,6 +56,9 @@
     --hairline: rgba(11, 18, 16, 0.12);
     --accent: #128064;
     --accent-soft: rgba(18, 128, 100, 0.10);
+    --good: #0a880a;
+    --warning: #a16a08;
+    --serious: #c0562c;
     --critical: #c02f2f;
     --critical-soft: rgba(208, 59, 59, 0.10);
     --shadow: 0 1px 2px rgba(11, 18, 16, 0.04), 0 8px 24px -16px rgba(11, 18, 16, 0.18);
@@ -74,6 +77,9 @@
       --hairline: rgba(255, 255, 255, 0.09);
       --accent: #35c795;
       --accent-soft: rgba(53, 199, 149, 0.16);
+      --good: #2fbf2f;
+      --warning: #e0a635;
+      --serious: #e0855e;
       --critical: #e66767;
       --critical-soft: rgba(230, 103, 103, 0.16);
       --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -16px rgba(0, 0, 0, 0.6);
@@ -90,6 +96,9 @@
     --hairline: rgba(255, 255, 255, 0.09);
     --accent: #35c795;
     --accent-soft: rgba(53, 199, 149, 0.16);
+    --good: #2fbf2f;
+    --warning: #e0a635;
+    --serious: #e0855e;
     --critical: #e66767;
     --critical-soft: rgba(230, 103, 103, 0.16);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -16px rgba(0, 0, 0, 0.6);
@@ -183,6 +192,12 @@
   }
   .practice-metric-label { font-size: 10.5px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
 
+  .zone-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin: 0 14px 12px; background: var(--surface-2); }
+  .zone-bar-segment { height: 100%; }
+  .zone-legend { display: flex; gap: 12px; flex-wrap: wrap; padding: 0 14px 12px; font-size: 11px; color: var(--ink-muted); }
+  .zone-legend-item { display: flex; align-items: center; gap: 5px; }
+  .zone-legend-swatch { width: 8px; height: 8px; border-radius: 2px; }
+
   .state-message {
     text-align: center; color: var(--ink-muted); font-size: 13.5px; padding: 40px 20px;
   }
@@ -241,6 +256,32 @@
       '</div>';
   }
 
+  var ZONE_SEGMENTS = [
+    { key: "zone_seconds_easy", varName: "--good", label: "Easy" },
+    { key: "zone_seconds_aerobic", varName: "--warning", label: "Aerobic" },
+    { key: "zone_seconds_threshold", varName: "--serious", label: "Threshold" },
+    { key: "zone_seconds_max", varName: "--critical", label: "Max effort" }
+  ];
+
+  function zoneBarHtml(p) {
+    var total = ZONE_SEGMENTS.reduce(function (sum, z) { return sum + (p[z.key] || 0); }, 0);
+    if (!total) return "";
+    var bar = ZONE_SEGMENTS.map(function (z) {
+      var seconds = p[z.key] || 0;
+      if (!seconds) return "";
+      var pct = (seconds / total) * 100;
+      return '<div class="zone-bar-segment" style="width:' + pct.toFixed(2) + '%; background: var(' + z.varName + ');"></div>';
+    }).join("");
+    var legend = ZONE_SEGMENTS.map(function (z) {
+      var seconds = p[z.key] || 0;
+      if (!seconds) return "";
+      var mins = Math.round(seconds / 60);
+      return '<span class="zone-legend-item"><span class="zone-legend-swatch" style="background: var(' + z.varName + ');"></span>' +
+        z.label + ' ' + mins + 'm</span>';
+    }).join("");
+    return '<div class="zone-bar">' + bar + '</div><div class="zone-legend">' + legend + '</div>';
+  }
+
   function renderError(message) {
     el.content.innerHTML = '<div class="card"><div class="state-message"><strong>' + message + '</strong>' +
       'Ask your coach for a fresh link if this keeps happening.</div></div>';
@@ -282,6 +323,7 @@
           (duration ? '<span>' + duration + '</span>' : '') +
           '</div>' +
           '<div class="practice-metrics">' + metrics + '</div>' +
+          zoneBarHtml(p) +
           '</div>';
       }).join("");
     }
