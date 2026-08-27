@@ -146,6 +146,14 @@ async function handleGetSwimmerSummary(token: string, env: Env): Promise<Respons
       [swimmer.swimmer_id]
     );
 
+    const metricsResult = await client.query(
+      `SELECT metric_name, value, unit, set_date
+       FROM swim_personal_records
+       WHERE swimmer_id = $1 AND is_current = true
+       ORDER BY metric_name`,
+      [swimmer.swimmer_id]
+    );
+
     return json({
       swimmer: {
         name: swimmer.name,
@@ -153,6 +161,7 @@ async function handleGetSwimmerSummary(token: string, env: Env): Promise<Respons
         baselineRestingHr: swimmer.baseline_resting_hr,
         age: swimmer.age,
       },
+      metrics: metricsResult.rows,
       practices: practicesResult.rows,
     });
   } catch (err) {
@@ -178,7 +187,20 @@ async function handleGetRoster(request: Request, env: Env): Promise<Response> {
        FROM swimmers
        ORDER BY name`
     );
-    return json({ swimmers: result.rows });
+    const metricsResult = await client.query(
+      `SELECT swimmer_id, metric_name, value, unit, set_date
+       FROM swim_personal_records
+       WHERE is_current = true
+       ORDER BY metric_name`
+    );
+    const metricsBySwimmer: Record<string, unknown[]> = {};
+    for (const row of metricsResult.rows) {
+      const sid = String(row.swimmer_id);
+      if (!metricsBySwimmer[sid]) metricsBySwimmer[sid] = [];
+      metricsBySwimmer[sid].push({ metricName: row.metric_name, value: row.value, unit: row.unit, setDate: row.set_date });
+    }
+    const swimmers = result.rows.map((s) => ({ ...s, metrics: metricsBySwimmer[String(s.swimmer_id)] || [] }));
+    return json({ swimmers });
   } catch (err) {
     return json({ error: "database error", detail: String(err) }, 500);
   } finally {
@@ -261,6 +283,48 @@ async function handleUpdateSwimmer(id: string, request: Request, env: Env): Prom
 }
 
 // ---------------------------------------------------------------
+// POST /roster/swimmers/:id/metrics -- coach-only, log a health metric
+// Freeform: any metricName is accepted (e.g. "resting_hr", "vo2_max",
+// "body_fat_pct"). Superseding a metric marks the prior current row as
+// no-longer-current rather than overwriting it, so history is kept.
+// ---------------------------------------------------------------
+async function handleAddMetric(swimmerId: string, request: Request, env: Env): Promise<Response> {
+  const authFail = requireCoachAuth(request, env);
+  if (authFail) return authFail;
+
+  let body: { metricName?: string; value?: number; unit?: string; setDate?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "invalid JSON body" }, 400);
+  }
+  if (!body.metricName || body.value === undefined || body.value === null) {
+    return json({ error: "metricName and value are required" }, 400);
+  }
+
+  const client = createClient(env);
+  try {
+    await client.connect();
+    await client.query(
+      `UPDATE swim_personal_records SET is_current = false
+       WHERE swimmer_id = $1 AND metric_name = $2 AND is_current = true`,
+      [swimmerId, body.metricName]
+    );
+    const result = await client.query(
+      `INSERT INTO swim_personal_records (swimmer_id, metric_name, value, unit, set_date, is_current)
+       VALUES ($1, $2, $3, $4, $5, true)
+       RETURNING pr_id, swimmer_id, metric_name, value, unit, set_date`,
+      [swimmerId, body.metricName, body.value, body.unit ?? null, body.setDate ?? new Date().toISOString().slice(0, 10)]
+    );
+    return json({ metric: result.rows[0] }, 201);
+  } catch (err) {
+    return json({ error: "database error", detail: String(err) }, 500);
+  } finally {
+    await client.end();
+  }
+}
+
+// ---------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------
 export default {
@@ -287,6 +351,10 @@ export default {
     const swimmerPatchMatch = path.match(/^\/roster\/swimmers\/(\d+)$/);
     if (swimmerPatchMatch && request.method === "PATCH") {
       return handleUpdateSwimmer(swimmerPatchMatch[1], request, env);
+    }
+    const metricsMatch = path.match(/^\/roster\/swimmers\/(\d+)\/metrics$/);
+    if (metricsMatch && request.method === "POST") {
+      return handleAddMetric(metricsMatch[1], request, env);
     }
     const summaryMatch = path.match(/^\/swimmer\/([^/]+)\/summary$/);
     if (summaryMatch && request.method === "GET") {

@@ -737,6 +737,8 @@
     if (evt.key === "Enter") createRosterSwimmer();
   });
 
+  var expandedSwimmerIds = {}; // swimmer_id -> true, preserved across re-renders
+
   function renderTeamRoster() {
     el.teamRosterList.innerHTML = "";
     if (!teamRoster.length) {
@@ -744,18 +746,99 @@
       return;
     }
     teamRoster.forEach(function (s) {
-      var row = document.createElement("div");
-      row.className = "practice-swimmer-row";
-      row.innerHTML =
-        "<span>" + s.name + "</span>" +
-        '<span class="practice-metric" style="text-align:left; font-family: var(--font-ui);">' +
-          '<button class="btn btn-ghost btn-sm" type="button">Copy share link</button>' +
+      var sid = s.swimmer_id;
+      var expanded = !!expandedSwimmerIds[sid];
+
+      var block = document.createElement("div");
+      block.className = "practice-block";
+
+      var head = document.createElement("div");
+      head.className = "practice-block-head";
+      head.style.cursor = "pointer";
+      head.innerHTML = "<strong>" + s.name + "</strong><span>" +
+        (s.baseline_max_hr ? "Max HR " + s.baseline_max_hr : "No max HR set") +
+        (s.metrics && s.metrics.length ? " · " + s.metrics.length + " metric" + (s.metrics.length === 1 ? "" : "s") : "") +
         "</span>";
-      row.querySelector("button").addEventListener("click", function () {
-        var link = new URL("summary.html?token=" + encodeURIComponent(s.share_token), window.location.href).href;
-        if (navigator.clipboard) navigator.clipboard.writeText(link).catch(function () {});
+      head.addEventListener("click", function () {
+        expandedSwimmerIds[sid] = !expanded;
+        renderTeamRoster();
       });
-      el.teamRosterList.appendChild(row);
+      block.appendChild(head);
+
+      if (expanded) {
+        var detail = document.createElement("div");
+        detail.style.padding = "12px 14px";
+        detail.style.borderTop = "1px solid var(--hairline)";
+
+        detail.innerHTML =
+          '<div class="settings-row" style="gap:14px; flex-wrap:wrap; margin-bottom:10px;">' +
+            '<div class="field-inline"><label>Max HR</label><input type="number" class="maxhr-input" data-field="baselineMaxHr" value="' + (s.baseline_max_hr || "") + '" style="width:64px;"></div>' +
+            '<div class="field-inline"><label>Resting HR</label><input type="number" class="maxhr-input" data-field="baselineRestingHr" value="' + (s.baseline_resting_hr || "") + '" style="width:64px;"></div>' +
+            '<div class="field-inline"><label>Age</label><input type="number" class="maxhr-input" data-field="age" value="' + (s.age || "") + '" style="width:52px;"></div>' +
+            '<button class="btn btn-primary btn-sm" type="button" data-action="save-profile">Save</button>' +
+            '<button class="btn btn-ghost btn-sm" type="button" data-action="copy-link">Copy share link</button>' +
+          '</div>' +
+          '<div style="font-size:11px; font-weight:700; color:var(--ink-muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px;">Health metrics</div>' +
+          '<div class="metrics-list" style="display:flex; flex-direction:column; gap:4px; margin-bottom:10px;">' +
+            (s.metrics && s.metrics.length
+              ? s.metrics.map(function (m) {
+                  return '<div style="font-size:13px; display:flex; justify-content:space-between;"><span>' + m.metricName + '</span>' +
+                    '<span class="practice-metric" style="font-family:var(--font-mono);">' + m.value + (m.unit ? " " + m.unit : "") + '</span></div>';
+                }).join("")
+              : '<div style="font-size:12.5px; color:var(--ink-muted);">None logged yet.</div>') +
+          '</div>' +
+          '<div class="field-inline" style="gap:6px; flex-wrap:wrap;">' +
+            '<input type="text" class="filter-input" data-field="metricName" placeholder="Metric name (e.g. vo2_max)" style="width:150px;">' +
+            '<input type="number" class="filter-input" data-field="metricValue" placeholder="Value" style="width:80px;">' +
+            '<input type="text" class="filter-input" data-field="metricUnit" placeholder="Unit (optional)" style="width:90px;">' +
+            '<button class="btn btn-ghost btn-sm" type="button" data-action="add-metric">+ Add metric</button>' +
+          '</div>' +
+          '<div class="profile-status" style="font-size:12px; color:var(--ink-muted); margin-top:6px;"></div>';
+
+        var statusEl = detail.querySelector(".profile-status");
+
+        detail.querySelector('[data-action="copy-link"]').addEventListener("click", function () {
+          var link = new URL("summary.html?token=" + encodeURIComponent(s.share_token), window.location.href).href;
+          if (navigator.clipboard) navigator.clipboard.writeText(link).catch(function () {});
+        });
+
+        detail.querySelector('[data-action="save-profile"]').addEventListener("click", function () {
+          var maxHr = parseFloat(detail.querySelector('[data-field="baselineMaxHr"]').value);
+          var restingHr = parseFloat(detail.querySelector('[data-field="baselineRestingHr"]').value);
+          var age = parseInt(detail.querySelector('[data-field="age"]').value, 10);
+          apiFetch("/roster/swimmers/" + sid, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              baselineMaxHr: isNaN(maxHr) ? null : maxHr,
+              baselineRestingHr: isNaN(restingHr) ? null : restingHr,
+              age: isNaN(age) ? null : age
+            })
+          })
+            .then(function (res) { if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
+            .then(function () { fetchTeamRoster(); })
+            .catch(function (err) { statusEl.textContent = "Couldn't save (" + err.message + ")."; });
+        });
+
+        detail.querySelector('[data-action="add-metric"]').addEventListener("click", function () {
+          var name = detail.querySelector('[data-field="metricName"]').value.trim();
+          var value = parseFloat(detail.querySelector('[data-field="metricValue"]').value);
+          var unit = detail.querySelector('[data-field="metricUnit"]').value.trim();
+          if (!name || isNaN(value)) { statusEl.textContent = "Enter both a metric name and a numeric value."; return; }
+          apiFetch("/roster/swimmers/" + sid + "/metrics", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ metricName: name, value: value, unit: unit || null })
+          })
+            .then(function (res) { if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
+            .then(function () { fetchTeamRoster(); })
+            .catch(function (err) { statusEl.textContent = "Couldn't add metric (" + err.message + ")."; });
+        });
+
+        block.appendChild(detail);
+      }
+
+      el.teamRosterList.appendChild(block);
     });
   }
 

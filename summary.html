@@ -249,12 +249,16 @@
   function renderSummary(data) {
     var swimmer = data.swimmer;
     var practices = data.practices || [];
+    var metrics = data.metrics || [];
     el.pageTitle.textContent = swimmer.name;
 
     var tiles = '<div class="tiles">' +
       metricTile(swimmer.baselineMaxHr, "Max HR") +
       metricTile(swimmer.baselineRestingHr, "Resting HR") +
       metricTile(swimmer.age, "Age") +
+      metrics.map(function (m) {
+        return metricTile(m.value + (m.unit ? " " + m.unit : ""), m.metric_name.replace(/_/g, " "));
+      }).join("") +
       '</div>';
 
     var practicesHtml;
