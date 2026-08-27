@@ -274,7 +274,8 @@
           metricItem(p.avg_bpm, "avg bpm") +
           metricItem(p.max_bpm, "peak bpm") +
           metricItem(p.min_bpm, "low bpm") +
-          metricItem(p.hrv_rmssd, "hrv ms");
+          metricItem(p.hrv_rmssd, "hrv ms") +
+          metricItem(p.trimp, "load");
         return '<div class="practice-block">' +
           '<div class="practice-block-head"><strong>' + dateStr + '</strong>' +
           (p.location ? '<span>' + p.location + '</span>' : '') +

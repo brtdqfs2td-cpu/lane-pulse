@@ -384,6 +384,7 @@
             <th data-sort="bpm">BPM <span class="arrow">▾</span></th>
             <th data-sort="zone">Zone <span class="arrow">▾</span></th>
             <th class="no-sort">HRV</th>
+            <th class="no-sort">HRR</th>
             <th class="no-sort">Trend</th>
             <th class="no-sort">Battery</th>
             <th class="no-sort">Max HR</th>
@@ -1116,6 +1117,51 @@
     hrvUnit.className = "bpm-unit"; hrvUnit.textContent = "ms";
     tdHrv.appendChild(hrvEl); tdHrv.appendChild(hrvUnit);
 
+    // Heart Rate Recovery — coach-triggered rather than auto-detected: click
+    // right when a swimmer stops a hard effort, captures BPM now and again
+    // 60s later. More reliable than trying to auto-detect "hard effort just
+    // ended" from the BPM stream alone.
+    var tdHrr = document.createElement("td");
+    var hrrBtn = document.createElement("button");
+    hrrBtn.className = "btn btn-ghost btn-sm";
+    hrrBtn.type = "button";
+    hrrBtn.textContent = "Test";
+    var hrrResultEl = document.createElement("div");
+    hrrResultEl.style.fontSize = "11px";
+    hrrResultEl.style.color = "var(--ink-muted)";
+    hrrResultEl.style.marginTop = "3px";
+    hrrBtn.addEventListener("click", function () {
+      if (!swimmer.bpm) { hrrResultEl.textContent = "no signal"; return; }
+      var peakBpm = swimmer.bpm;
+      var secondsLeft = 60;
+      hrrBtn.disabled = true;
+      hrrResultEl.textContent = "";
+      hrrBtn.textContent = secondsLeft + "s";
+      var countdown = setInterval(function () {
+        secondsLeft -= 1;
+        if (secondsLeft > 0) {
+          hrrBtn.textContent = secondsLeft + "s";
+          return;
+        }
+        clearInterval(countdown);
+        hrrBtn.disabled = false;
+        hrrBtn.textContent = "Test";
+        var bpmAfter = swimmer.bpm;
+        if (bpmAfter === null || bpmAfter === undefined) { hrrResultEl.textContent = "lost signal"; return; }
+        var recovery = peakBpm - bpmAfter;
+        hrrResultEl.textContent = recovery + " bpm drop";
+        if (swimmer.rosterSwimmerId) {
+          apiFetch("/roster/swimmers/" + swimmer.rosterSwimmerId + "/metrics", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ metricName: "hrr_60s", value: recovery, unit: "bpm" })
+          }).catch(function () { /* result is still shown even if the save fails */ });
+        }
+      }, 1000);
+    });
+    tdHrr.appendChild(hrrBtn);
+    tdHrr.appendChild(hrrResultEl);
+
     var tdSpark = document.createElement("td");
     var svg = document.createElementNS(svgNS, "svg");
     svg.setAttribute("class", "spark");
@@ -1163,7 +1209,7 @@
     tdActions.appendChild(removeBtn);
 
     tr.appendChild(tdName); tr.appendChild(tdStatus); tr.appendChild(tdBpm);
-    tr.appendChild(tdZone); tr.appendChild(tdHrv); tr.appendChild(tdSpark); tr.appendChild(tdBatt);
+    tr.appendChild(tdZone); tr.appendChild(tdHrv); tr.appendChild(tdHrr); tr.appendChild(tdSpark); tr.appendChild(tdBatt);
     tr.appendChild(tdMaxHr); tr.appendChild(tdRoster); tr.appendChild(tdActions);
 
     var refs = {

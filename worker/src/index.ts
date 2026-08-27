@@ -134,10 +134,21 @@ async function handleGetSwimmerSummary(token: string, env: Env): Promise<Respons
     }
     const swimmer = swimmerResult.rows[0];
 
+    // TRIMP here is a simplified zone-weighted proxy (Edwards-style: minutes
+    // per zone x a linear 1-4 weight), not the strict Banister HRR-based
+    // formula -- that needs a reliable resting HR per swimmer, which not
+    // everyone has set yet. Good enough for relative session-to-session
+    // load comparison, not a precise physiological unit.
     const practicesResult = await client.query(
       `SELECT s.session_id, s.session_date, s.coach, s.location, s.start_time, s.end_time,
               h.avg_bpm, h.max_bpm, h.min_bpm, h.hrv_rmssd,
-              h.zone_seconds_easy, h.zone_seconds_aerobic, h.zone_seconds_threshold, h.zone_seconds_max
+              h.zone_seconds_easy, h.zone_seconds_aerobic, h.zone_seconds_threshold, h.zone_seconds_max,
+              ROUND(
+                (COALESCE(h.zone_seconds_easy, 0) / 60.0 * 1) +
+                (COALESCE(h.zone_seconds_aerobic, 0) / 60.0 * 2) +
+                (COALESCE(h.zone_seconds_threshold, 0) / 60.0 * 3) +
+                (COALESCE(h.zone_seconds_max, 0) / 60.0 * 4)
+              , 1) AS trimp
        FROM swim_sessions s
        JOIN swim_hr_data h ON h.session_id = s.session_id
        WHERE s.swimmer_id = $1
