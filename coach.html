@@ -383,6 +383,7 @@
             <th class="no-sort">Status</th>
             <th data-sort="bpm">BPM <span class="arrow">▾</span></th>
             <th data-sort="zone">Zone <span class="arrow">▾</span></th>
+            <th class="no-sort">HRV</th>
             <th class="no-sort">Trend</th>
             <th class="no-sort">Battery</th>
             <th class="no-sort">Max HR</th>
@@ -1024,6 +1025,14 @@
     zonePill.className = "zone-pill";
     tdZone.appendChild(zonePill);
 
+    var tdHrv = document.createElement("td");
+    var hrvEl = document.createElement("span");
+    hrvEl.className = "bpm-cell";
+    hrvEl.style.fontSize = "14px";
+    var hrvUnit = document.createElement("span");
+    hrvUnit.className = "bpm-unit"; hrvUnit.textContent = "ms";
+    tdHrv.appendChild(hrvEl); tdHrv.appendChild(hrvUnit);
+
     var tdSpark = document.createElement("td");
     var svg = document.createElementNS(svgNS, "svg");
     svg.setAttribute("class", "spark");
@@ -1071,12 +1080,12 @@
     tdActions.appendChild(removeBtn);
 
     tr.appendChild(tdName); tr.appendChild(tdStatus); tr.appendChild(tdBpm);
-    tr.appendChild(tdZone); tr.appendChild(tdSpark); tr.appendChild(tdBatt);
+    tr.appendChild(tdZone); tr.appendChild(tdHrv); tr.appendChild(tdSpark); tr.appendChild(tdBatt);
     tr.appendChild(tdMaxHr); tr.appendChild(tdRoster); tr.appendChild(tdActions);
 
     var refs = {
       tr: tr,
-      els: { dot: dot, statusText: statusText, bpmEl: bpmEl, zonePill: zonePill, path: path, tdBatt: tdBatt, maxHrInput: maxHrInput, nameInput: nameInput, rosterSelect: rosterSelect }
+      els: { dot: dot, statusText: statusText, bpmEl: bpmEl, zonePill: zonePill, hrvEl: hrvEl, path: path, tdBatt: tdBatt, maxHrInput: maxHrInput, nameInput: nameInput, rosterSelect: rosterSelect }
     };
     rows.set(swimmer.id, refs);
     return refs;
@@ -1110,6 +1119,9 @@
       els.zonePill.style.color = "var(--ink-muted)";
       els.path.setAttribute("stroke", "var(--ink-muted)");
     }
+
+    // HRV (rMSSD) — needs a few beats of RR data to settle, shows — until then
+    els.hrvEl.textContent = (swimmer.hrv !== null && swimmer.hrv !== undefined) ? Math.round(swimmer.hrv) : "—";
 
     // sparkline
     els.path.setAttribute("d", sparklinePath(swimmer.points));
