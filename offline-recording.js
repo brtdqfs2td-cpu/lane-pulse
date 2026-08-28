@@ -389,6 +389,61 @@
   }
 
   // =====================================================================
+  // .REC file metadata header (from OfflineRecordingData.kt's
+  // parseMetaData/parseHeader). Verified byte-for-byte against a real
+  // recording pulled off a Verity Sense: magic and the readable
+  // start-time string both landed exactly where this expects. Only
+  // handles SecurityStrategy.NONE (0x00) -- Lane Pulse always requests
+  // NONE when it starts a recording, so XOR/AES128/AES256 paths (which
+  // need a device-specific secret Lane Pulse never has) are explicitly
+  // unsupported rather than silently wrong.
+  // =====================================================================
+  var OFFLINE_HEADER_MAGIC = 0x3d7c4c2b;
+  var OFFLINE_HEADER_LENGTH = 16;
+  var DATE_TIME_LENGTH = 20;
+
+  function readUint32LE(bytes, offset) {
+    return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
+  }
+
+  // Returns { securityStrategy, magic, version, startTimeRaw, dataOffset }.
+  // dataOffset is where the actual PMD frame stream begins in the file.
+  function parseOfflineRecordingHeader(bytes) {
+    var offset = 0;
+    var securityStrategy = bytes[offset]; offset += 1;
+    if (securityStrategy !== 0) {
+      throw new Error("Offline recording uses security strategy " + securityStrategy + " (not NONE) -- unsupported, Lane Pulse has no secret for it");
+    }
+
+    var magic = readUint32LE(bytes, offset);
+    if (magic !== OFFLINE_HEADER_MAGIC) {
+      throw new Error("Offline recording has wrong signature: expected 0x" + OFFLINE_HEADER_MAGIC.toString(16) + ", got 0x" + magic.toString(16));
+    }
+    var version = readUint32LE(bytes, offset + 4);
+    offset += OFFLINE_HEADER_LENGTH; // magic(4) + version(4) + free(4) + eswHash(4)
+
+    var startTimeBytes = bytes.slice(offset, offset + DATE_TIME_LENGTH);
+    var startTimeRaw = new TextDecoder().decode(new Uint8Array(startTimeBytes)).replace(/\0+$/, "");
+    offset += DATE_TIME_LENGTH;
+
+    var settingsLength = bytes[offset]; offset += 1;
+    offset += settingsLength; // settings payload itself not decoded yet -- sample rate/resolution assumed from known Verity Sense ACC defaults
+
+    var securityInfoLength = bytes[offset]; offset += 1;
+    offset += securityInfoLength; // 0 for SecurityStrategy.NONE
+
+    offset += 2; // dataPayloadSize field (not currently used)
+
+    return {
+      securityStrategy: securityStrategy,
+      magic: magic,
+      version: version,
+      startTimeRaw: startTimeRaw,
+      dataOffset: offset
+    };
+  }
+
+  // =====================================================================
   // GATT orchestration -- browser-only (uses navigator.bluetooth
   // characteristic objects), NOT covered by the Node unit tests. This is
   // the one part of the module that can only be verified against real
@@ -557,6 +612,8 @@
     decodeAccFrame: decodeAccFrame,
     readSignedInt: readSignedInt,
     measurementTypeFromFileName: measurementTypeFromFileName,
+    OFFLINE_HEADER_MAGIC: OFFLINE_HEADER_MAGIC,
+    parseOfflineRecordingHeader: parseOfflineRecordingHeader,
 
     // GATT orchestration (browser-only, untested by the Node suite)
     psftpRequest: psftpRequest,

@@ -163,6 +163,70 @@ assertEqual(O.measurementTypeFromFileName("HR014.REC"), "HR", "measurementTypeFr
 assertEqual(O.measurementTypeFromFileName("SKINTEMP002.REC"), "SKINTEMP", "measurementTypeFromFileName SKINTEMP002.REC");
 
 // ---------------------------------------------------------------------
+// .REC file metadata header -- real test vector: the first 32 bytes of an
+// actual ACC.REC file pulled off a Verity Sense (from
+// /U/0/20170103/R/021337/ACC.REC via the coach.html debug button).
+// Only covers up through the start-time string (32 bytes isn't enough to
+// reach the settings/dataOffset fields), so this checks the magic number
+// and security byte directly rather than calling the full parser.
+// ---------------------------------------------------------------------
+var realFilePrefix = [
+  0x00, 0x2b, 0x4c, 0x7c, 0x3d, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xba, 0xab, 0xbe,
+  0x53, 0x32, 0x30, 0x31, 0x37, 0x2d, 0x30, 0x31, 0x2d, 0x30, 0x33, 0x20, 0x30, 0x32, 0x3a, 0x31
+];
+assertEqual(realFilePrefix[0], 0x00, "real file: security strategy byte is NONE (0x00)");
+var realMagic = (realFilePrefix[1] | (realFilePrefix[2] << 8) | (realFilePrefix[3] << 16) | (realFilePrefix[4] << 24)) >>> 0;
+assertEqual(realMagic, O.OFFLINE_HEADER_MAGIC, "real file: magic number at byte offset 1 matches OFFLINE_HEADER_MAGIC exactly");
+var realDateTimeChars = realFilePrefix.slice(17, 32).map(function (b) { return String.fromCharCode(b); }).join("");
+assertEqual(realDateTimeChars, "2017-01-03 02:1", "real file: readable date-time text starts exactly at byte offset 17");
+
+// Full hand-crafted header (security=NONE, real magic, a short start-time
+// string, a 3-byte settings blob, empty security-info, 2-byte payload size)
+// to verify parseOfflineRecordingHeader end-to-end, including dataOffset.
+function buildTestHeader() {
+  var bytes = [0x00]; // security = NONE
+  // magic (LE) + version(1) + free(0) + eswHash(0)
+  bytes = bytes.concat([0x2b, 0x4c, 0x7c, 0x3d]); // magic
+  bytes = bytes.concat([0x01, 0x00, 0x00, 0x00]); // version = 1
+  bytes = bytes.concat([0x00, 0x00, 0x00, 0x00]); // free = 0
+  bytes = bytes.concat([0x00, 0x00, 0x00, 0x00]); // eswHash = 0
+  var dateStr = "2017-01-03 02:13:37"; // 19 chars -- the field is a fixed 20 bytes, null-padded
+  for (var i = 0; i < dateStr.length; i++) bytes.push(dateStr.charCodeAt(i));
+  bytes.push(0x00); // null pad to fill the 20-byte field
+  bytes.push(3); bytes = bytes.concat([0xaa, 0xbb, 0xcc]); // settings: length 3, 3 bytes payload
+  bytes.push(0); // security info length 0
+  bytes = bytes.concat([0x10, 0x00]); // dataPayloadSize = 16
+  bytes = bytes.concat([0xde, 0xad, 0xbe, 0xef]); // simulated start of actual frame data
+  return bytes;
+}
+var testHeader = buildTestHeader();
+var parsed = O.parseOfflineRecordingHeader(testHeader);
+assertEqual(parsed.securityStrategy, 0, "parseOfflineRecordingHeader: securityStrategy");
+assertEqual(parsed.magic, O.OFFLINE_HEADER_MAGIC, "parseOfflineRecordingHeader: magic");
+assertEqual(parsed.version, 1, "parseOfflineRecordingHeader: version");
+assertEqual(parsed.startTimeRaw, "2017-01-03 02:13:37", "parseOfflineRecordingHeader: startTimeRaw");
+// 1(security) + 16(header) + 20(datetime) + 1(settingsLen) + 3(settings) + 1(secInfoLen) + 2(payloadSize) = 44
+assertEqual(parsed.dataOffset, 44, "parseOfflineRecordingHeader: dataOffset lands exactly after the fixed+variable sections");
+assertEqual(Array.prototype.slice.call(testHeader, parsed.dataOffset), [0xde, 0xad, 0xbe, 0xef], "parseOfflineRecordingHeader: dataOffset correctly points at the simulated frame data");
+
+function assertThrows(fn, label) {
+  try {
+    fn();
+    failures += 1;
+    console.log("FAIL: " + label + " (expected an exception, got none)");
+  } catch (e) {
+    console.log("ok - " + label);
+  }
+}
+var wrongMagicHeader = testHeader.slice();
+wrongMagicHeader[1] = 0xff; // corrupt the magic
+assertThrows(function () { O.parseOfflineRecordingHeader(wrongMagicHeader); }, "parseOfflineRecordingHeader rejects a wrong magic number");
+
+var encryptedHeader = testHeader.slice();
+encryptedHeader[0] = 0x02; // SecurityStrategy.AES128
+assertThrows(function () { O.parseOfflineRecordingHeader(encryptedHeader); }, "parseOfflineRecordingHeader rejects a non-NONE security strategy");
+
+// ---------------------------------------------------------------------
 console.log("");
 if (failures > 0) {
   console.log(failures + " FAILURE(S)");
