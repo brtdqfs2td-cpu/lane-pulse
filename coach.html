@@ -1414,6 +1414,54 @@
       });
       tdActions.appendChild(fetchBtn);
       tdActions.appendChild(fetchResultEl);
+
+      var decodeBtn = document.createElement("button");
+      decodeBtn.className = "btn btn-ghost btn-sm";
+      decodeBtn.type = "button";
+      decodeBtn.textContent = "Decode smallest file";
+      decodeBtn.style.marginBottom = "4px";
+      var decodeResultEl = document.createElement("div");
+      decodeResultEl.style.fontSize = "11px";
+      decodeResultEl.style.color = "var(--ink-muted)";
+      decodeResultEl.style.wordBreak = "break-word";
+      decodeBtn.addEventListener("click", function () {
+        if (!swimmer.device || !swimmer.device.gatt || !swimmer.device.gatt.connected) {
+          decodeResultEl.textContent = "sensor not connected";
+          return;
+        }
+        decodeBtn.disabled = true;
+        decodeResultEl.textContent = "finding ACC files…";
+        var targetPath = null;
+        getPsftpChannel(swimmer)
+          .then(function (mtuChar) {
+            return LanePulseOffline.findOfflineAccRecordings(mtuChar).then(function (results) {
+              if (!results.length) throw new Error("no ACC files found");
+              results.sort(function (a, b) { return a.size - b.size; });
+              targetPath = results[0].path;
+              decodeResultEl.textContent = "fetching " + targetPath + " (" + results[0].size + "b)…";
+              return LanePulseOffline.getFile(mtuChar, targetPath);
+            });
+          })
+          .then(function (bytes) {
+            decodeResultEl.textContent = "decoding…";
+            var decoded = LanePulseOffline.decodeAccRecordingFile(bytes);
+            decodeBtn.disabled = false;
+            var s = decoded.samples;
+            var summary = "OK — " + targetPath + ": " + decoded.frameCount + " frames, " + s.length + " samples, " +
+              "sampleRate=" + decoded.sampleRate + "Hz, factor=" + decoded.factor + ", startTime=" + decoded.header.startTimeRaw;
+            if (s.length) {
+              summary += ". First sample: x=" + s[0].x + " y=" + s[0].y + " z=" + s[0].z +
+                ". Last sample: x=" + s[s.length - 1].x + " y=" + s[s.length - 1].y + " z=" + s[s.length - 1].z;
+            }
+            decodeResultEl.textContent = summary;
+          })
+          .catch(function (err) {
+            decodeBtn.disabled = false;
+            decodeResultEl.textContent = "failed: " + err.message + (targetPath ? " (path: " + targetPath + ")" : "");
+          });
+      });
+      tdActions.appendChild(decodeBtn);
+      tdActions.appendChild(decodeResultEl);
     }
 
     var removeBtn = document.createElement("button");
