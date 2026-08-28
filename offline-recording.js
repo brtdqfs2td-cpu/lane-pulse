@@ -542,11 +542,20 @@
     var frames = splitFrameStream(fileBytes, header);
     var allSamples = [];
     var previousTimeStamp = 0n;
-    frames.forEach(function (frameBytes) {
-      var envelope = parsePmdDataFrameEnvelope(frameBytes);
-      var samples = decodeAccFrame(envelope, previousTimeStamp, factor, sampleRate);
-      previousTimeStamp = envelope.timeStamp;
-      allSamples = allSamples.concat(samples);
+    frames.forEach(function (frameBytes, frameIndex) {
+      var envelope;
+      try {
+        envelope = parsePmdDataFrameEnvelope(frameBytes);
+        var samples = decodeAccFrame(envelope, previousTimeStamp, factor, sampleRate);
+        previousTimeStamp = envelope.timeStamp;
+        allSamples = allSamples.concat(samples);
+      } catch (err) {
+        var firstBytes = Array.prototype.slice.call(frameBytes, 0, 10)
+          .map(function (b) { return ("0" + b.toString(16)).slice(-2); }).join(" ");
+        var fileOffset = header.dataOffset + frameIndex * header.dataPayloadSize;
+        throw new Error(err.message + " [frame " + frameIndex + "/" + frames.length +
+          ", file offset " + fileOffset + ", envelope bytes: " + firstBytes + "]");
+      }
     });
 
     return { header: header, settings: settings, sampleRate: sampleRate, factor: factor, frameCount: frames.length, samples: allSamples };
