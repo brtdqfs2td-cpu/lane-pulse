@@ -486,24 +486,29 @@
   }
 
   // Recursively walks /U/0/{date}/R/{time}/ and returns every entry whose
-  // name maps to an ACC recording, with its full path attached.
+  // name maps to an ACC recording, with its full path attached. Walks one
+  // directory at a time -- Web Bluetooth allows only one GATT operation in
+  // flight per device, so firing sibling directory listings concurrently
+  // (e.g. via Promise.all) fails with "GATT operation already in progress."
   function findOfflineAccRecordings(mtuChar) {
     function walk(path) {
       return listDirectory(mtuChar, path).then(function (entries) {
         var results = [];
-        var subWalks = [];
+        var directories = entries.filter(function (entry) {
+          return entry.name.charAt(entry.name.length - 1) === "/";
+        });
         entries.forEach(function (entry) {
-          var isDirectory = entry.name.charAt(entry.name.length - 1) === "/";
-          if (isDirectory) {
-            subWalks.push(walk(path + entry.name));
-          } else if (measurementTypeFromFileName(entry.name) === "ACC") {
+          if (entry.name.charAt(entry.name.length - 1) !== "/" && measurementTypeFromFileName(entry.name) === "ACC") {
             results.push({ path: path + entry.name, size: entry.size });
           }
         });
-        return Promise.all(subWalks).then(function (subResults) {
-          subResults.forEach(function (r) { results = results.concat(r); });
-          return results;
-        });
+        return directories.reduce(function (chain, dirEntry) {
+          return chain.then(function () {
+            return walk(path + dirEntry.name).then(function (subResults) {
+              results = results.concat(subResults);
+            });
+          });
+        }, Promise.resolve()).then(function () { return results; });
       });
     }
     return walk(OFFLINE_ROOT_PATH);
