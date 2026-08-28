@@ -575,7 +575,10 @@
     try {
       device = await navigator.bluetooth.requestDevice({
         filters: [{ services: ["heart_rate"] }],
-        optionalServices: ["battery_service"]
+        // Chrome blocks access to any GATT service not listed here, even
+        // ones the device actually exposes -- PSFTP/PMD are needed for the
+        // offline-recording debug button below.
+        optionalServices: ["battery_service", LanePulseOffline.PSFTP_SERVICE_UUID, LanePulseOffline.PMD_SERVICE_UUID]
       });
     } catch (err) {
       return; // user cancelled the picker — nothing to do
