@@ -410,6 +410,11 @@
   var PSFTP_CHUNK_SIZE = 20;
   var PSFTP_TIMEOUT_MS = 15000;
 
+  // Assumes the caller has already started notifications on mtuChar --
+  // deliberately does NOT call startNotifications() itself. Re-enabling an
+  // already-active notification subscription is its own GATT operation,
+  // and issuing it on every single request was colliding with Windows'
+  // one-GATT-operation-in-flight-per-device limit. See preparePsftpChannel.
   function psftpRequest(mtuChar, command, path) {
     var header = encodePbPFtpOperation(command, path);
     var message = new Uint8Array(makeRfc60Request(header));
@@ -454,25 +459,32 @@
       }
 
       mtuChar.addEventListener("characteristicvaluechanged", onNotify);
-      mtuChar.startNotifications()
-        .then(function () {
-          var i = 0;
-          function sendNext() {
-            if (i >= frames.length) return Promise.resolve();
-            return mtuChar.writeValueWithoutResponse(frames[i]).then(function () {
-              i++;
-              return sendNext();
-            });
-          }
+      var i = 0;
+      function sendNext() {
+        if (i >= frames.length) return Promise.resolve();
+        return mtuChar.writeValueWithoutResponse(frames[i]).then(function () {
+          i++;
           return sendNext();
-        })
-        .catch(function (err) {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          reject(err);
         });
+      }
+      sendNext().catch(function (err) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      });
     });
+  }
+
+  // Call once per device connection: resolves the PSFTP service, its MTU
+  // characteristic, and turns on notifications a single time. Every
+  // psftpRequest afterward reuses this same characteristic instance.
+  function preparePsftpChannel(gattServer) {
+    return gattServer.getPrimaryService(PSFTP_SERVICE_UUID)
+      .then(function (service) { return service.getCharacteristic(PSFTP_MTU_CHAR_UUID); })
+      .then(function (mtuChar) {
+        return mtuChar.startNotifications().then(function () { return mtuChar; });
+      });
   }
 
   function listDirectory(mtuChar, path) {
@@ -548,6 +560,7 @@
 
     // GATT orchestration (browser-only, untested by the Node suite)
     psftpRequest: psftpRequest,
+    preparePsftpChannel: preparePsftpChannel,
     listDirectory: listDirectory,
     getFile: getFile,
     findOfflineAccRecordings: findOfflineAccRecordings

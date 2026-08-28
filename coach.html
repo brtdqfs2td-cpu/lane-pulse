@@ -487,6 +487,23 @@
 
   function bluetoothSupported() { return !!(navigator.bluetooth && window.isSecureContext); }
 
+  // Returns a cached, already-notification-enabled PSFTP MTU characteristic
+  // for this swimmer, set up only once no matter how many PSFTP calls
+  // follow. Reusing it (instead of re-resolving the service/characteristic
+  // and re-enabling notifications on every call) avoids colliding with
+  // Windows' one-GATT-operation-in-flight-per-device limit.
+  function getPsftpChannel(swimmer) {
+    if (!swimmer.psftpChannelPromise) {
+      swimmer.psftpChannelPromise = swimmer.device.gatt.connect()
+        .then(function (server) { return LanePulseOffline.preparePsftpChannel(server); })
+        .catch(function (err) {
+          swimmer.psftpChannelPromise = null; // allow retrying on the next click
+          throw err;
+        });
+    }
+    return swimmer.psftpChannelPromise;
+  }
+
   function teamMaxHr() {
     var v = parseInt(el.teamMaxHr.value, 10);
     return (v && v > 60 && v < 240) ? v : 190;
@@ -1305,12 +1322,7 @@
         }
         debugBtn.disabled = true;
         debugResultEl.textContent = "connecting to PSFTP…";
-        // A fresh connect() call, even when already connected, is needed
-        // before accessing a service beyond what addSwimmer() originally
-        // negotiated -- same pattern addSwimmer() itself already uses.
-        swimmer.device.gatt.connect()
-          .then(function (server) { return server.getPrimaryService(LanePulseOffline.PSFTP_SERVICE_UUID); })
-          .then(function (service) { return service.getCharacteristic(LanePulseOffline.PSFTP_MTU_CHAR_UUID); })
+        getPsftpChannel(swimmer)
           .then(function (mtuChar) {
             debugResultEl.textContent = "listing " + LanePulseOffline.OFFLINE_ROOT_PATH + " …";
             return LanePulseOffline.listDirectory(mtuChar, LanePulseOffline.OFFLINE_ROOT_PATH);
@@ -1345,9 +1357,7 @@
         }
         findAccBtn.disabled = true;
         findAccResultEl.textContent = "walking " + LanePulseOffline.OFFLINE_ROOT_PATH + " (may take a bit)…";
-        swimmer.device.gatt.connect()
-          .then(function (server) { return server.getPrimaryService(LanePulseOffline.PSFTP_SERVICE_UUID); })
-          .then(function (service) { return service.getCharacteristic(LanePulseOffline.PSFTP_MTU_CHAR_UUID); })
+        getPsftpChannel(swimmer)
           .then(function (mtuChar) { return LanePulseOffline.findOfflineAccRecordings(mtuChar); })
           .then(function (results) {
             findAccBtn.disabled = false;
