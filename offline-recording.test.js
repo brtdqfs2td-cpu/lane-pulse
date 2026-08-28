@@ -208,6 +208,25 @@ assertEqual(parsed.startTimeRaw, "2017-01-03 02:13:37", "parseOfflineRecordingHe
 // 1(security) + 16(header) + 20(datetime) + 1(settingsLen) + 3(settings) + 1(secInfoLen) + 2(payloadSize) = 44
 assertEqual(parsed.dataOffset, 44, "parseOfflineRecordingHeader: dataOffset lands exactly after the fixed+variable sections");
 assertEqual(Array.prototype.slice.call(testHeader, parsed.dataOffset), [0xde, 0xad, 0xbe, 0xef], "parseOfflineRecordingHeader: dataOffset correctly points at the simulated frame data");
+assertEqual(parsed.dataPayloadSize, 16, "parseOfflineRecordingHeader: dataPayloadSize (fixed per-frame byte size)");
+
+// ---------------------------------------------------------------------
+// splitFrameStream: frames are simply fixed-size chunks with no other
+// delimiter (confirmed from parseData's slicing loop in
+// OfflineRecordingData.kt) -- verify with 3 frames of 4 bytes each.
+// ---------------------------------------------------------------------
+var multiFrameFile = [0xff, 0xff].concat([1, 2, 3, 4]).concat([5, 6, 7, 8]).concat([9, 10, 11, 12]);
+var multiFrameHeader = { dataOffset: 2, dataPayloadSize: 4 };
+var splitFrames = O.splitFrameStream(multiFrameFile, multiFrameHeader);
+assertEqual(splitFrames.length, 3, "splitFrameStream: splits into 3 frames");
+assertEqual(Array.prototype.slice.call(splitFrames[0]), [1, 2, 3, 4], "splitFrameStream: frame 0");
+assertEqual(Array.prototype.slice.call(splitFrames[1]), [5, 6, 7, 8], "splitFrameStream: frame 1");
+assertEqual(Array.prototype.slice.call(splitFrames[2]), [9, 10, 11, 12], "splitFrameStream: frame 2");
+
+// trailing partial bytes (not a full frame) are dropped, not returned malformed
+var withTrailingPartial = [0xff, 0xff].concat([1, 2, 3, 4]).concat([5, 6]); // only 2 of 4 bytes for a 2nd frame
+var partialFrames = O.splitFrameStream(withTrailingPartial, { dataOffset: 2, dataPayloadSize: 4 });
+assertEqual(partialFrames.length, 1, "splitFrameStream: drops a trailing incomplete frame rather than returning a short one");
 
 function assertThrows(fn, label) {
   try {

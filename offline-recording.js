@@ -427,20 +427,43 @@
     offset += DATE_TIME_LENGTH;
 
     var settingsLength = bytes[offset]; offset += 1;
-    offset += settingsLength; // settings payload itself not decoded yet -- sample rate/resolution assumed from known Verity Sense ACC defaults
+    var settingsBytes = bytes.slice(offset, offset + settingsLength); // raw for now -- PmdSetting decoding is the next piece
+    offset += settingsLength;
 
     var securityInfoLength = bytes[offset]; offset += 1;
     offset += securityInfoLength; // 0 for SecurityStrategy.NONE
 
-    offset += 2; // dataPayloadSize field (not currently used)
+    // The fixed byte size of every frame in this file -- frames are packed
+    // back-to-back at exactly this size, with no other delimiter (confirmed
+    // from OfflineRecordingData.kt's parseData: `decryptedData.slice(offset
+    // until packetSize + offset)` in a loop, offset += packetSize each time).
+    var dataPayloadSize = bytes[offset] | (bytes[offset + 1] << 8);
+    offset += 2;
 
     return {
       securityStrategy: securityStrategy,
       magic: magic,
       version: version,
       startTimeRaw: startTimeRaw,
+      settingsBytes: settingsBytes,
+      dataPayloadSize: dataPayloadSize,
       dataOffset: offset
     };
+  }
+
+  // Splits the frame stream (starting at header.dataOffset) into individual
+  // fixed-size frames using header.dataPayloadSize, per parseData's slicing
+  // logic. Returns an array of Uint8Array, one per frame.
+  function splitFrameStream(fileBytes, header) {
+    var frames = [];
+    var packetSize = header.dataPayloadSize;
+    if (!packetSize || packetSize <= 0) return frames;
+    var offset = header.dataOffset;
+    while (offset + packetSize <= fileBytes.length) {
+      frames.push(fileBytes.slice(offset, offset + packetSize));
+      offset += packetSize;
+    }
+    return frames;
   }
 
   // =====================================================================
@@ -614,6 +637,7 @@
     measurementTypeFromFileName: measurementTypeFromFileName,
     OFFLINE_HEADER_MAGIC: OFFLINE_HEADER_MAGIC,
     parseOfflineRecordingHeader: parseOfflineRecordingHeader,
+    splitFrameStream: splitFrameStream,
 
     // GATT orchestration (browser-only, untested by the Node suite)
     psftpRequest: psftpRequest,
