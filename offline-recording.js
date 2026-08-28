@@ -456,16 +456,41 @@
   // Splits the frame stream (starting at header.dataOffset) into individual
   // fixed-size frames using header.dataPayloadSize, per parseData's slicing
   // logic. Returns an array of Uint8Array, one per frame.
-  function splitFrameStream(fileBytes, header) {
+  // strideOverride lets the caller advance by a different amount than the
+  // slice size -- needed when the real gap between frames doesn't match
+  // header.dataPayloadSize exactly (see determineRealFrameStride below).
+  function splitFrameStream(fileBytes, header, strideOverride) {
     var frames = [];
     var packetSize = header.dataPayloadSize;
+    var stride = strideOverride || packetSize;
     if (!packetSize || packetSize <= 0) return frames;
     var offset = header.dataOffset;
     while (offset + packetSize <= fileBytes.length) {
       frames.push(fileBytes.slice(offset, offset + packetSize));
-      offset += packetSize;
+      offset += stride;
     }
     return frames;
+  }
+
+  // Verifies (and corrects, if needed) the real byte gap between frame 0
+  // and frame 1 by scanning near where the documented dataPayloadSize says
+  // frame 1 should start. Real-hardware testing found a file where the
+  // true stride was 2 bytes larger than the documented value (likely an
+  // older on-device format variant -- this 2017 test recording predates
+  // the current SDK source by years) -- rather than hardcode that offset,
+  // this measures it per-file and falls back to the documented value if
+  // no clear candidate is found nearby.
+  function determineRealFrameStride(fileBytes, header) {
+    var documented = header.dataPayloadSize;
+    if (header.dataOffset + documented > fileBytes.length) return documented;
+    var envelope0 = parsePmdDataFrameEnvelope(fileBytes.slice(header.dataOffset, header.dataOffset + documented));
+    var expectedOffset = header.dataOffset + documented;
+    var searchFrom = Math.max(header.dataOffset + 1, expectedOffset - 20);
+    var searchTo = expectedOffset + 20;
+    var candidates = scanForFrameBoundaries(fileBytes, searchFrom, searchTo, envelope0.measurementType);
+    if (!candidates.length) return documented;
+    candidates.sort(function (a, b) { return Math.abs(a.offset - expectedOffset) - Math.abs(b.offset - expectedOffset); });
+    return candidates[0].offset - header.dataOffset;
   }
 
   // Debugging aid: searches file bytes for offsets whose envelope looks
@@ -558,7 +583,8 @@
     var sampleRate = (settings.SAMPLE_RATE && settings.SAMPLE_RATE[0]) || VERITY_SENSE_DEFAULT_ACC_SAMPLE_RATE;
     var factor = (settings.FACTOR && settings.FACTOR[0] !== undefined) ? settings.FACTOR[0] : 1.0;
 
-    var frames = splitFrameStream(fileBytes, header);
+    var frameStride = determineRealFrameStride(fileBytes, header);
+    var frames = splitFrameStream(fileBytes, header, frameStride);
     var allSamples = [];
     var previousTimeStamp = 0n;
     frames.forEach(function (frameBytes, frameIndex) {
@@ -571,13 +597,13 @@
       } catch (err) {
         var firstBytes = Array.prototype.slice.call(frameBytes, 0, 10)
           .map(function (b) { return ("0" + b.toString(16)).slice(-2); }).join(" ");
-        var fileOffset = header.dataOffset + frameIndex * header.dataPayloadSize;
+        var fileOffset = header.dataOffset + frameIndex * frameStride;
         throw new Error(err.message + " [frame " + frameIndex + "/" + frames.length +
           ", file offset " + fileOffset + ", envelope bytes: " + firstBytes + "]");
       }
     });
 
-    return { header: header, settings: settings, sampleRate: sampleRate, factor: factor, frameCount: frames.length, samples: allSamples };
+    return { header: header, settings: settings, sampleRate: sampleRate, factor: factor, frameStride: frameStride, frameCount: frames.length, samples: allSamples };
   }
 
   // =====================================================================
@@ -753,6 +779,7 @@
     parseOfflineRecordingHeader: parseOfflineRecordingHeader,
     splitFrameStream: splitFrameStream,
     scanForFrameBoundaries: scanForFrameBoundaries,
+    determineRealFrameStride: determineRealFrameStride,
     parsePmdSettings: parsePmdSettings,
     readFloat32LE: readFloat32LE,
     decodeAccRecordingFile: decodeAccRecordingFile,

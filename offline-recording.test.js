@@ -228,6 +228,19 @@ var withTrailingPartial = [0xff, 0xff].concat([1, 2, 3, 4]).concat([5, 6]); // o
 var partialFrames = O.splitFrameStream(withTrailingPartial, { dataOffset: 2, dataPayloadSize: 4 });
 assertEqual(partialFrames.length, 1, "splitFrameStream: drops a trailing incomplete frame rather than returning a short one");
 
+// strideOverride -- frames are packetSize=4 bytes but really spaced 5 bytes
+// apart (1 padding byte between each), as happens when the documented
+// dataPayloadSize doesn't match the real on-disk gap between frames.
+var strideFile = [0xff, 0xff]
+  .concat([1, 2, 3, 4]).concat([0xee])
+  .concat([5, 6, 7, 8]).concat([0xee])
+  .concat([9, 10, 11, 12]);
+var strideFrames = O.splitFrameStream(strideFile, { dataOffset: 2, dataPayloadSize: 4 }, 5);
+assertEqual(strideFrames.length, 3, "splitFrameStream: strideOverride still finds 3 frames");
+assertEqual(Array.prototype.slice.call(strideFrames[0]), [1, 2, 3, 4], "splitFrameStream: strideOverride frame 0");
+assertEqual(Array.prototype.slice.call(strideFrames[1]), [5, 6, 7, 8], "splitFrameStream: strideOverride frame 1 (skips the padding byte)");
+assertEqual(Array.prototype.slice.call(strideFrames[2]), [9, 10, 11, 12], "splitFrameStream: strideOverride frame 2 (skips the padding byte)");
+
 function assertThrows(fn, label) {
   try {
     fn();
@@ -330,6 +343,30 @@ scanBytes[20] = 3; scanBytes[20 + 9] = 0x81; // wrong measurementType, must be e
 var scanResults = O.scanForFrameBoundaries(scanBytes, 0, 40, 2);
 assertEqual(scanResults.length, 1, "scanForFrameBoundaries: finds exactly the one matching-type candidate");
 assertEqual(scanResults[0], { offset: 5, frameType: 1, compressed: true }, "scanForFrameBoundaries: candidate details are correct");
+
+// ---------------------------------------------------------------------
+// determineRealFrameStride -- documented dataPayloadSize says frame 1
+// should start at offset 16, but the real (empirically-scanned) frame 1
+// envelope actually starts at offset 18. This mirrors the real-hardware
+// bug found via the "Scan for frame boundary" debug tool (documented=277,
+// real delta=279).
+// ---------------------------------------------------------------------
+var strideBytes = new Array(50).fill(0xff);
+strideBytes[0] = 2;  // frame 0 envelope: measurementType = 2
+strideBytes[9] = 0x00; // frame 0: frameType 0, not compressed
+strideBytes[18] = 2;  // frame 1's REAL envelope starts at 18, not the documented 16
+strideBytes[18 + 9] = 0x01; // frame 1: frameType 1, not compressed
+var strideHeader = { dataOffset: 0, dataPayloadSize: 16 };
+var realStride = O.determineRealFrameStride(strideBytes, strideHeader);
+assertEqual(realStride, 18, "determineRealFrameStride: finds the true 18-byte gap instead of trusting the documented 16");
+
+// when no plausible candidate exists nearby, fall back to the documented value
+var noStrideBytes = new Array(50).fill(0xff);
+noStrideBytes[0] = 2;
+noStrideBytes[9] = 0x00;
+// (no second envelope anywhere in the scan window)
+var fallbackStride = O.determineRealFrameStride(noStrideBytes, strideHeader);
+assertEqual(fallbackStride, 16, "determineRealFrameStride: falls back to the documented dataPayloadSize when no candidate is found");
 
 // ---------------------------------------------------------------------
 console.log("");
