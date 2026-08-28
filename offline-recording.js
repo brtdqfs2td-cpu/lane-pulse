@@ -472,27 +472,6 @@
     return frames;
   }
 
-  // Verifies (and corrects, if needed) the real byte gap between frame 0
-  // and frame 1 by scanning near where the documented dataPayloadSize says
-  // frame 1 should start. Real-hardware testing found a file where the
-  // true stride was 2 bytes larger than the documented value (likely an
-  // older on-device format variant -- this 2017 test recording predates
-  // the current SDK source by years) -- rather than hardcode that offset,
-  // this measures it per-file and falls back to the documented value if
-  // no clear candidate is found nearby.
-  function determineRealFrameStride(fileBytes, header) {
-    var documented = header.dataPayloadSize;
-    if (header.dataOffset + documented > fileBytes.length) return documented;
-    var envelope0 = parsePmdDataFrameEnvelope(fileBytes.slice(header.dataOffset, header.dataOffset + documented));
-    var expectedOffset = header.dataOffset + documented;
-    var searchFrom = Math.max(header.dataOffset + 1, expectedOffset - 20);
-    var searchTo = expectedOffset + 20;
-    var candidates = scanForFrameBoundaries(fileBytes, searchFrom, searchTo, envelope0.measurementType);
-    if (!candidates.length) return documented;
-    candidates.sort(function (a, b) { return Math.abs(a.offset - expectedOffset) - Math.abs(b.offset - expectedOffset); });
-    return candidates[0].offset - header.dataOffset;
-  }
-
   // Debugging aid: searches file bytes for offsets whose envelope looks
   // plausible (measurementType matches expectedMeasurementType exactly,
   // frameType's low 7 bits fall in 0-14) within [fromOffset, toOffset).
@@ -510,6 +489,67 @@
       }
     }
     return candidates;
+  }
+
+  // Finds the real frame-start offset nearest to expectedOffset, searching
+  // only within [searchFrom, searchTo) for a plausible envelope (matching
+  // measurementType, valid frameType) via scanForFrameBoundaries. Falls back
+  // to expectedOffset itself when nothing plausible is found nearby -- e.g.
+  // right at end-of-file, or a frame type this scan can't recognize.
+  function findFrameBoundaryNear(fileBytes, searchFrom, searchTo, expectedOffset, measurementType) {
+    var candidates = scanForFrameBoundaries(fileBytes, searchFrom, searchTo, measurementType);
+    if (!candidates.length) return expectedOffset;
+    candidates.sort(function (a, b) { return Math.abs(a.offset - expectedOffset) - Math.abs(b.offset - expectedOffset); });
+    return candidates[0].offset;
+  }
+
+  // One-shot version of the boundary search: corrects just the frame 0 ->
+  // frame 1 gap and reports it as a stride. Kept as a simple, directly
+  // testable utility (and still exported for debugging) -- superseded
+  // within decodeAccRecordingFile itself by locateFrameOffsets below, which
+  // repeats this same empirical search per-frame rather than assuming one
+  // gap size holds for an entire file (real-hardware testing found frame
+  // sizes drift frame-to-frame in compressed recordings, not just once).
+  function determineRealFrameStride(fileBytes, header) {
+    var documented = header.dataPayloadSize;
+    if (header.dataOffset + documented > fileBytes.length) return documented;
+    var envelope0 = parsePmdDataFrameEnvelope(fileBytes.slice(header.dataOffset, header.dataOffset + documented));
+    var expectedOffset = header.dataOffset + documented;
+    var searchFrom = Math.max(header.dataOffset + 1, expectedOffset - 20);
+    var searchTo = expectedOffset + 20;
+    var realOffset = findFrameBoundaryNear(fileBytes, searchFrom, searchTo, expectedOffset, envelope0.measurementType);
+    return realOffset - header.dataOffset;
+  }
+
+  // Walks the frame stream one frame at a time, re-measuring the boundary
+  // to the *next* frame after each one rather than trusting a single global
+  // stride for the whole file. Real-hardware testing showed this is
+  // necessary: compressed ACC frames can each pack a different number of
+  // delta-encoded samples, so consecutive frames aren't reliably the same
+  // byte length even when frame 0 -> frame 1 happens to match a simple
+  // "documented + 2" pattern. Returns an array of frame *start* offsets;
+  // the caller derives each frame's byte range from consecutive offsets
+  // (and the documented size for the final frame).
+  function locateFrameOffsets(fileBytes, header) {
+    var documented = header.dataPayloadSize;
+    var searchWindow = 60; // generous -- a stray false-positive match needs both the right measurementType byte AND a plausible frameType, so collisions are very unlikely even over a wider window
+    var offsets = [];
+    var currentOffset = header.dataOffset;
+    while (currentOffset + 10 <= fileBytes.length) {
+      offsets.push(currentOffset);
+      var envelope;
+      try {
+        envelope = parsePmdDataFrameEnvelope(fileBytes.slice(currentOffset, Math.min(currentOffset + documented, fileBytes.length)));
+      } catch (err) {
+        break; // not enough bytes left for even one more envelope
+      }
+      var expectedNext = currentOffset + documented;
+      if (expectedNext + 10 > fileBytes.length) break; // no room left for another full frame
+      var searchFrom = Math.max(currentOffset + 1, expectedNext - searchWindow);
+      var searchTo = expectedNext + searchWindow;
+      currentOffset = findFrameBoundaryNear(fileBytes, searchFrom, searchTo, expectedNext, envelope.measurementType);
+    }
+    return offsets;
   }
 
   // =====================================================================
@@ -583,11 +623,14 @@
     var sampleRate = (settings.SAMPLE_RATE && settings.SAMPLE_RATE[0]) || VERITY_SENSE_DEFAULT_ACC_SAMPLE_RATE;
     var factor = (settings.FACTOR && settings.FACTOR[0] !== undefined) ? settings.FACTOR[0] : 1.0;
 
-    var frameStride = determineRealFrameStride(fileBytes, header);
-    var frames = splitFrameStream(fileBytes, header, frameStride);
+    var frameOffsets = locateFrameOffsets(fileBytes, header);
     var allSamples = [];
     var previousTimeStamp = 0n;
-    frames.forEach(function (frameBytes, frameIndex) {
+    frameOffsets.forEach(function (startOffset, frameIndex) {
+      var endOffset = (frameIndex + 1 < frameOffsets.length)
+        ? frameOffsets[frameIndex + 1]
+        : Math.min(startOffset + header.dataPayloadSize, fileBytes.length);
+      var frameBytes = fileBytes.slice(startOffset, endOffset);
       var envelope;
       try {
         envelope = parsePmdDataFrameEnvelope(frameBytes);
@@ -597,13 +640,12 @@
       } catch (err) {
         var firstBytes = Array.prototype.slice.call(frameBytes, 0, 10)
           .map(function (b) { return ("0" + b.toString(16)).slice(-2); }).join(" ");
-        var fileOffset = header.dataOffset + frameIndex * frameStride;
-        throw new Error(err.message + " [frame " + frameIndex + "/" + frames.length +
-          ", file offset " + fileOffset + ", envelope bytes: " + firstBytes + "]");
+        throw new Error(err.message + " [frame " + frameIndex + "/" + frameOffsets.length +
+          ", file offset " + startOffset + ", envelope bytes: " + firstBytes + "]");
       }
     });
 
-    return { header: header, settings: settings, sampleRate: sampleRate, factor: factor, frameStride: frameStride, frameCount: frames.length, samples: allSamples };
+    return { header: header, settings: settings, sampleRate: sampleRate, factor: factor, frameCount: frameOffsets.length, samples: allSamples };
   }
 
   // =====================================================================
@@ -779,7 +821,9 @@
     parseOfflineRecordingHeader: parseOfflineRecordingHeader,
     splitFrameStream: splitFrameStream,
     scanForFrameBoundaries: scanForFrameBoundaries,
+    findFrameBoundaryNear: findFrameBoundaryNear,
     determineRealFrameStride: determineRealFrameStride,
+    locateFrameOffsets: locateFrameOffsets,
     parsePmdSettings: parsePmdSettings,
     readFloat32LE: readFloat32LE,
     decodeAccRecordingFile: decodeAccRecordingFile,

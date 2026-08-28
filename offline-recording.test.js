@@ -333,6 +333,47 @@ var derivedFile = buildFullTestFile(derivedSettings);
 assertThrows(function () { O.decodeAccRecordingFile(derivedFile); }, "decodeAccRecordingFile rejects a derived-measurement recording");
 
 // ---------------------------------------------------------------------
+// decodeAccRecordingFile end-to-end with differently-drifted frame sizes
+// (mirrors the real-hardware bug: frame 0 legitimately carries 3 extra
+// content bytes -- one more sample -- than the documented dataPayloadSize
+// implies, frame 1 carries 6 extra bytes -- a *different* amount -- and
+// frame 2 matches the documented size exactly. A single global stride
+// correction handles frame 0->1 but then gets frame 1->2 wrong; only a
+// per-frame re-measurement gets all three right.)
+// ---------------------------------------------------------------------
+function buildDriftingTestFile() {
+  var bytes = [0x00].concat([0x2b, 0x4c, 0x7c, 0x3d]).concat([0x01, 0x00, 0x00, 0x00]).concat([0x00, 0x00, 0x00, 0x00]).concat([0x00, 0x00, 0x00, 0x00]);
+  var dateStr = "2017-01-03 02:13:37";
+  for (var i = 0; i < dateStr.length; i++) bytes.push(dateStr.charCodeAt(i));
+  bytes.push(0x00);
+  var settings = [0, 1, 52, 0, 5, 1, 0x00, 0x00, 0x80, 0x3f];
+  bytes.push(settings.length);
+  bytes = bytes.concat(settings);
+  bytes.push(0);
+  bytes = bytes.concat([16, 0]); // documented dataPayloadSize = 16 (a 2-sample raw frame) -- frames 0 and 1 will actually carry more
+
+  function buildRawFrame(timestampLow, samples) {
+    var frame = [2].concat([timestampLow, 0, 0, 0, 0, 0, 0, 0]).concat([0x00]); // raw, frameType 0 (1 byte/channel)
+    samples.forEach(function (s) { frame = frame.concat([s[0] & 0xff, s[1] & 0xff, s[2] & 0xff]); });
+    return frame;
+  }
+  bytes = bytes.concat(buildRawFrame(100, [[1, 2, 3], [4, 5, 6], [99, 99, 99]]));               // frame 0: 3 samples (real size 19, +3 over documented)
+  bytes = bytes.concat(buildRawFrame(200, [[7, 8, 9], [10, 11, 12], [88, 88, 88], [77, 77, 77]])); // frame 1: 4 samples (real size 22, +6 over documented -- a different drift)
+  bytes = bytes.concat(buildRawFrame(300, [[13, 14, 15], [16, 17, 18]]));                        // frame 2: 2 samples (real size 16, matches documented exactly)
+  return bytes;
+}
+var driftingFile = buildDriftingTestFile();
+var driftDecoded = O.decodeAccRecordingFile(driftingFile);
+assertEqual(driftDecoded.frameCount, 3, "decodeAccRecordingFile: finds all 3 frames despite each carrying a different amount of drift");
+assertEqual(driftDecoded.samples.length, 9, "decodeAccRecordingFile: decodes all 9 samples (3+4+2) across differently-drifted frames");
+// global sample indices: frame 0 -> 0,1,2 (3 samples); frame 1 -> 3,4,5,6 (4 samples); frame 2 -> 7,8 (2 samples)
+assertEqual([driftDecoded.samples[2].x, driftDecoded.samples[2].y, driftDecoded.samples[2].z], [99, 99, 99], "decodeAccRecordingFile: frame 0's extra (undocumented) 3rd sample decodes correctly");
+assertEqual([driftDecoded.samples[5].x, driftDecoded.samples[5].y, driftDecoded.samples[5].z], [88, 88, 88], "decodeAccRecordingFile: frame 1's extra (undocumented) 3rd sample decodes correctly");
+assertEqual([driftDecoded.samples[6].x, driftDecoded.samples[6].y, driftDecoded.samples[6].z], [77, 77, 77], "decodeAccRecordingFile: frame 1's extra (undocumented) 4th sample decodes correctly");
+assertEqual([driftDecoded.samples[7].x, driftDecoded.samples[7].y, driftDecoded.samples[7].z], [13, 14, 15], "decodeAccRecordingFile: frame 2's 1st sample decodes correctly");
+assertEqual([driftDecoded.samples[8].x, driftDecoded.samples[8].y, driftDecoded.samples[8].z], [16, 17, 18], "decodeAccRecordingFile: frame 2 (exactly documented size) still decodes correctly after two drifted frames");
+
+// ---------------------------------------------------------------------
 // scanForFrameBoundaries -- a real envelope at offset 5 (measurementType=2),
 // noise everywhere else, one false-positive-shaped decoy at offset 20 with
 // the wrong measurementType (must NOT match).
@@ -367,6 +408,22 @@ noStrideBytes[9] = 0x00;
 // (no second envelope anywhere in the scan window)
 var fallbackStride = O.determineRealFrameStride(noStrideBytes, strideHeader);
 assertEqual(fallbackStride, 16, "determineRealFrameStride: falls back to the documented dataPayloadSize when no candidate is found");
+
+// ---------------------------------------------------------------------
+// locateFrameOffsets -- the real-hardware failure this exists to fix: a
+// *single* global stride correction isn't enough, because each frame-to-
+// frame gap can drift by a DIFFERENT amount (frame 0->1 drifts +2 over the
+// documented size, frame 1->2 drifts +5). A decoder using one fixed
+// stride for the whole file gets frame 2 wrong; locateFrameOffsets must
+// re-measure the gap after every single frame.
+// ---------------------------------------------------------------------
+var driftBytes = new Array(60).fill(0xff);
+driftBytes[0] = 2;  driftBytes[9] = 0x00;        // frame 0 real start: offset 0  (matches documented)
+driftBytes[18] = 2; driftBytes[18 + 9] = 0x01;   // frame 1 real start: offset 18 (documented predicted 16, drift +2)
+driftBytes[39] = 2; driftBytes[39 + 9] = 0x02;   // frame 2 real start: offset 39 (documented predicted 34, drift +5)
+var driftHeader = { dataOffset: 0, dataPayloadSize: 16 };
+var frameOffsets = O.locateFrameOffsets(driftBytes, driftHeader);
+assertEqual(frameOffsets, [0, 18, 39], "locateFrameOffsets: follows each frame's real (differently-drifted) boundary, not one fixed stride");
 
 // ---------------------------------------------------------------------
 console.log("");
