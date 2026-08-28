@@ -1328,6 +1328,41 @@
       });
       tdActions.appendChild(debugBtn);
       tdActions.appendChild(debugResultEl);
+
+      var findAccBtn = document.createElement("button");
+      findAccBtn.className = "btn btn-ghost btn-sm";
+      findAccBtn.type = "button";
+      findAccBtn.textContent = "Find ACC files";
+      findAccBtn.style.marginBottom = "4px";
+      var findAccResultEl = document.createElement("div");
+      findAccResultEl.style.fontSize = "11px";
+      findAccResultEl.style.color = "var(--ink-muted)";
+      findAccResultEl.style.wordBreak = "break-word";
+      findAccBtn.addEventListener("click", function () {
+        if (!swimmer.device || !swimmer.device.gatt || !swimmer.device.gatt.connected) {
+          findAccResultEl.textContent = "sensor not connected";
+          return;
+        }
+        findAccBtn.disabled = true;
+        findAccResultEl.textContent = "walking " + LanePulseOffline.OFFLINE_ROOT_PATH + " (may take a bit)…";
+        swimmer.device.gatt.connect()
+          .then(function (server) { return server.getPrimaryService(LanePulseOffline.PSFTP_SERVICE_UUID); })
+          .then(function (service) { return service.getCharacteristic(LanePulseOffline.PSFTP_MTU_CHAR_UUID); })
+          .then(function (mtuChar) { return LanePulseOffline.findOfflineAccRecordings(mtuChar); })
+          .then(function (results) {
+            findAccBtn.disabled = false;
+            findAccResultEl.textContent = results.length
+              ? "OK — " + results.length + " ACC file" + (results.length === 1 ? "" : "s") + ": " +
+                results.map(function (r) { return r.path + " (" + r.size + "b)"; }).join(", ")
+              : "OK — no ACC files found";
+          })
+          .catch(function (err) {
+            findAccBtn.disabled = false;
+            findAccResultEl.textContent = "failed: " + err.message;
+          });
+      });
+      tdActions.appendChild(findAccBtn);
+      tdActions.appendChild(findAccResultEl);
     }
 
     var removeBtn = document.createElement("button");
