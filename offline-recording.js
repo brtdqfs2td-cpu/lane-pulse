@@ -445,7 +445,9 @@
       magic: magic,
       version: version,
       startTimeRaw: startTimeRaw,
+      settingsLength: settingsLength,
       settingsBytes: settingsBytes,
+      securityInfoLength: securityInfoLength,
       dataPayloadSize: dataPayloadSize,
       dataOffset: offset
     };

@@ -1403,9 +1403,20 @@
           })
           .then(function (bytes) {
             fetchBtn.disabled = false;
-            var first = Array.prototype.slice.call(bytes, 0, 32);
+            var first = Array.prototype.slice.call(bytes, 0, 90);
             var hex = first.map(function (b) { return ("0" + b.toString(16)).slice(-2); }).join(" ");
-            fetchResultEl.textContent = "OK — " + targetPath + ", " + bytes.length + " bytes. First 32: " + hex;
+            var summary = "OK — " + targetPath + ", " + bytes.length + " bytes. First 90: " + hex;
+            try {
+              var header = LanePulseOffline.parseOfflineRecordingHeader(bytes);
+              summary += " | PARSED: securityStrategy=" + header.securityStrategy +
+                " magic=0x" + header.magic.toString(16) + " version=" + header.version +
+                " startTimeRaw=\"" + header.startTimeRaw + "\" settingsLength=" + header.settingsLength +
+                " securityInfoLength=" + header.securityInfoLength + " dataPayloadSize=" + header.dataPayloadSize +
+                " dataOffset=" + header.dataOffset;
+            } catch (headerErr) {
+              summary += " | HEADER PARSE FAILED: " + headerErr.message;
+            }
+            fetchResultEl.textContent = summary;
           })
           .catch(function (err) {
             fetchBtn.disabled = false;
