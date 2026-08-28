@@ -246,6 +246,80 @@ encryptedHeader[0] = 0x02; // SecurityStrategy.AES128
 assertThrows(function () { O.parseOfflineRecordingHeader(encryptedHeader); }, "parseOfflineRecordingHeader rejects a non-NONE security strategy");
 
 // ---------------------------------------------------------------------
+// readFloat32LE -- 1.0 as IEEE754 is the well-known bit pattern 0x3F800000
+// ---------------------------------------------------------------------
+assertEqual(O.readFloat32LE([0x00, 0x00, 0x80, 0x3f], 0), 1, "readFloat32LE decodes 1.0 correctly");
+assertEqual(O.readFloat32LE([0x00, 0x00, 0x00, 0x00], 0), 0, "readFloat32LE decodes 0.0 correctly");
+
+// ---------------------------------------------------------------------
+// parsePmdSettings -- TLV format: [typeId][count][count x fieldSize bytes]
+// SAMPLE_RATE=52 (type 0, 2 bytes), CHANNELS=3 (type 4, 1 byte),
+// FACTOR=1.0 (type 5, 4 bytes, IEEE754 bits)
+// ---------------------------------------------------------------------
+var settingsBytes = [
+  0, 1, 52, 0,        // SAMPLE_RATE, count 1, value 52 (LE uint16)
+  4, 1, 3,            // CHANNELS, count 1, value 3
+  5, 1, 0x00, 0x00, 0x80, 0x3f // FACTOR, count 1, 1.0 as float bits
+];
+var parsedSettings = O.parsePmdSettings(settingsBytes);
+assertEqual(parsedSettings.SAMPLE_RATE, [52], "parsePmdSettings: SAMPLE_RATE");
+assertEqual(parsedSettings.CHANNELS, [3], "parsePmdSettings: CHANNELS");
+assertEqual(parsedSettings.FACTOR, [1], "parsePmdSettings: FACTOR (float bits decoded correctly)");
+assertEqual(O.parsePmdSettings([]), {}, "parsePmdSettings: empty input returns empty settings");
+assertThrows(function () { O.parsePmdSettings([99, 1, 0]); }, "parsePmdSettings rejects an unknown setting type ID");
+
+// ---------------------------------------------------------------------
+// decodeAccRecordingFile -- full synthetic file: header + settings
+// (SAMPLE_RATE=52, FACTOR=1.0) + two raw TYPE_0 ACC frames (2 samples
+// each, 1 byte/channel, 3 channels -> 6 bytes dataContent -> 16-byte
+// frames including the 10-byte envelope).
+// ---------------------------------------------------------------------
+function buildFullTestFile(settingsBytes) {
+  var bytes = [0x00]; // security = NONE
+  bytes = bytes.concat([0x2b, 0x4c, 0x7c, 0x3d]); // magic
+  bytes = bytes.concat([0x01, 0x00, 0x00, 0x00]); // version
+  bytes = bytes.concat([0x00, 0x00, 0x00, 0x00]); // free
+  bytes = bytes.concat([0x00, 0x00, 0x00, 0x00]); // eswHash
+  var dateStr = "2017-01-03 02:13:37";
+  for (var i = 0; i < dateStr.length; i++) bytes.push(dateStr.charCodeAt(i));
+  bytes.push(0x00); // null pad to 20 bytes
+
+  var settings = settingsBytes || [0, 1, 52, 0, 5, 1, 0x00, 0x00, 0x80, 0x3f]; // default: SAMPLE_RATE=52, FACTOR=1.0
+  bytes.push(settings.length);
+  bytes = bytes.concat(settings);
+  bytes.push(0); // security info length 0
+  bytes = bytes.concat([16, 0]); // dataPayloadSize = 16 (10-byte envelope + 6-byte dataContent)
+
+  function buildFrame(timestampLow, x1, y1, z1, x2, y2, z2) {
+    var frame = [2]; // measurementType (unused by decode, arbitrary)
+    // 8-byte LE timestamp -- keep it small and only vary the low byte for this test
+    frame = frame.concat([timestampLow, 0, 0, 0, 0, 0, 0, 0]);
+    frame.push(0x00); // frameType 0, not compressed
+    frame = frame.concat([x1 & 0xff, y1 & 0xff, z1 & 0xff, x2 & 0xff, y2 & 0xff, z2 & 0xff]);
+    return frame;
+  }
+  bytes = bytes.concat(buildFrame(100, 1, 2, 3, 4, 5, 6));
+  bytes = bytes.concat(buildFrame(200, 7, 8, 9, 10, 11, 12));
+  return bytes;
+}
+
+var fullFile = buildFullTestFile();
+var decoded = O.decodeAccRecordingFile(fullFile);
+assertEqual(decoded.sampleRate, 52, "decodeAccRecordingFile: sampleRate read from settings");
+assertEqual(decoded.factor, 1, "decodeAccRecordingFile: factor read from settings");
+assertEqual(decoded.frameCount, 2, "decodeAccRecordingFile: frameCount");
+assertEqual(decoded.samples.length, 4, "decodeAccRecordingFile: total samples across both frames");
+assertEqual([decoded.samples[0].x, decoded.samples[0].y, decoded.samples[0].z], [1, 2, 3], "decodeAccRecordingFile: sample 0");
+assertEqual([decoded.samples[1].x, decoded.samples[1].y, decoded.samples[1].z], [4, 5, 6], "decodeAccRecordingFile: sample 1");
+assertEqual([decoded.samples[2].x, decoded.samples[2].y, decoded.samples[2].z], [7, 8, 9], "decodeAccRecordingFile: sample 2 (2nd frame)");
+assertEqual([decoded.samples[3].x, decoded.samples[3].y, decoded.samples[3].z], [10, 11, 12], "decodeAccRecordingFile: sample 3 (2nd frame)");
+
+// derived-measurement recordings must be explicitly rejected, not silently mis-decoded
+var derivedSettings = [7, 1, 0]; // DERIVED_MEASUREMENT_METHOD=[0]
+var derivedFile = buildFullTestFile(derivedSettings);
+assertThrows(function () { O.decodeAccRecordingFile(derivedFile); }, "decodeAccRecordingFile rejects a derived-measurement recording");
+
+// ---------------------------------------------------------------------
 console.log("");
 if (failures > 0) {
   console.log(failures + " FAILURE(S)");

@@ -467,6 +467,90 @@
   }
 
   // =====================================================================
+  // PmdSetting decoding (from PmdSetting.kt): a simple repeated
+  // [typeId(1)][count(1)][count x fieldSize bytes] structure. Only the
+  // fields Lane Pulse's ACC decode actually needs are named here; the rest
+  // are still parsed generically (so DERIVED_MEASUREMENT_METHOD can be
+  // detected) but not individually documented.
+  // =====================================================================
+  var PMD_SETTING_TYPE = {
+    0: { name: "SAMPLE_RATE", fieldSize: 2 },
+    1: { name: "RESOLUTION", fieldSize: 2 },
+    2: { name: "RANGE", fieldSize: 2 },
+    3: { name: "RANGE_MILLIUNIT", fieldSize: 4 },
+    4: { name: "CHANNELS", fieldSize: 1 },
+    5: { name: "FACTOR", fieldSize: 4 }, // IEEE754 float bits, not a plain int
+    6: { name: "SECURITY", fieldSize: 16 },
+    7: { name: "DERIVED_MEASUREMENT_METHOD", fieldSize: 1 },
+    8: { name: "SOURCE_MEASUREMENT_TYPE", fieldSize: 1 },
+    9: { name: "SOURCE_MEASUREMENT_SAMPLE_RATE", fieldSize: 2 },
+    10: { name: "SOURCE_MEASUREMENT_RANGE", fieldSize: 4 },
+    11: { name: "DERIVED_MEASUREMENT_TIME_WINDOW", fieldSize: 4 },
+    12: { name: "DERIVED_MEASUREMENT_SETTINGS_GROUP_ID", fieldSize: 1 }
+  };
+
+  function readFloat32LE(bytes, offset) {
+    var buf = new ArrayBuffer(4);
+    var view = new DataView(buf);
+    for (var i = 0; i < 4; i++) view.setUint8(i, bytes[offset + i]);
+    return view.getFloat32(0, true);
+  }
+
+  function parsePmdSettings(bytes) {
+    var settings = {};
+    if (!bytes || bytes.length <= 1) return settings;
+    var offset = 0;
+    while (offset < bytes.length) {
+      var typeId = bytes[offset]; offset += 1;
+      var typeInfo = PMD_SETTING_TYPE[typeId];
+      if (!typeInfo) throw new Error("Unknown PmdSettingType ID: " + typeId);
+      var count = bytes[offset]; offset += 1;
+      var values = [];
+      for (var i = 0; i < count; i++) {
+        values.push(typeInfo.name === "FACTOR" ? readFloat32LE(bytes, offset) : readSignedInt(bytes, offset, typeInfo.fieldSize));
+        offset += typeInfo.fieldSize;
+      }
+      settings[typeInfo.name] = values;
+    }
+    return settings;
+  }
+
+  // =====================================================================
+  // Full file decode: header -> settings -> fixed-size frame split -> ACC
+  // decode of each frame, threading the running timestamp between frames
+  // exactly like PolarOfflineRecordingApiImpl's parseData does. Explicitly
+  // refuses a "derived measurement" recording (DERIVED_MEASUREMENT_METHOD
+  // present) rather than silently mis-decoding it as raw ACC -- that's a
+  // materially different frame format Lane Pulse doesn't handle yet.
+  // =====================================================================
+  var VERITY_SENSE_DEFAULT_ACC_SAMPLE_RATE = 52; // Hz, matches the documented default config
+
+  function decodeAccRecordingFile(fileBytes) {
+    var header = parseOfflineRecordingHeader(fileBytes);
+    var settings = parsePmdSettings(header.settingsBytes);
+
+    if (settings.DERIVED_MEASUREMENT_METHOD && settings.DERIVED_MEASUREMENT_METHOD.length) {
+      throw new Error("This recording is a derived-measurement recording (methods: " +
+        settings.DERIVED_MEASUREMENT_METHOD.join(",") + ") -- not supported, needs different decode logic than raw ACC");
+    }
+
+    var sampleRate = (settings.SAMPLE_RATE && settings.SAMPLE_RATE[0]) || VERITY_SENSE_DEFAULT_ACC_SAMPLE_RATE;
+    var factor = (settings.FACTOR && settings.FACTOR[0] !== undefined) ? settings.FACTOR[0] : 1.0;
+
+    var frames = splitFrameStream(fileBytes, header);
+    var allSamples = [];
+    var previousTimeStamp = 0n;
+    frames.forEach(function (frameBytes) {
+      var envelope = parsePmdDataFrameEnvelope(frameBytes);
+      var samples = decodeAccFrame(envelope, previousTimeStamp, factor, sampleRate);
+      previousTimeStamp = envelope.timeStamp;
+      allSamples = allSamples.concat(samples);
+    });
+
+    return { header: header, settings: settings, sampleRate: sampleRate, factor: factor, frameCount: frames.length, samples: allSamples };
+  }
+
+  // =====================================================================
   // GATT orchestration -- browser-only (uses navigator.bluetooth
   // characteristic objects), NOT covered by the Node unit tests. This is
   // the one part of the module that can only be verified against real
@@ -638,6 +722,9 @@
     OFFLINE_HEADER_MAGIC: OFFLINE_HEADER_MAGIC,
     parseOfflineRecordingHeader: parseOfflineRecordingHeader,
     splitFrameStream: splitFrameStream,
+    parsePmdSettings: parsePmdSettings,
+    readFloat32LE: readFloat32LE,
+    decodeAccRecordingFile: decodeAccRecordingFile,
 
     // GATT orchestration (browser-only, untested by the Node suite)
     psftpRequest: psftpRequest,
