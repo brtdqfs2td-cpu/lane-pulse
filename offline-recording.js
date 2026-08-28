@@ -668,7 +668,14 @@
   // what's actually negotiated.
   // =====================================================================
   var PSFTP_CHUNK_SIZE = 20;
-  var PSFTP_TIMEOUT_MS = 15000;
+  // 15s was enough for a single isolated GET (a directory listing, or one
+  // file fetched by itself), but real hardware testing found that fetching
+  // several actual files back-to-back -- each one hundreds of 20-byte BLE
+  // notification packets, not the tiny payload a directory listing needs --
+  // routinely blew past 15s, timing out uniformly across every file in a
+  // multi-file sync (including one that had decoded fine moments earlier
+  // fetched on its own). Given generously for sustained sequential transfers.
+  var PSFTP_TIMEOUT_MS = 45000;
 
   // Assumes the caller has already started notifications on mtuChar --
   // deliberately does NOT call startNotifications() itself. Re-enabling an
