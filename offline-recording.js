@@ -468,6 +468,25 @@
     return frames;
   }
 
+  // Debugging aid: searches file bytes for offsets whose envelope looks
+  // plausible (measurementType matches expectedMeasurementType exactly,
+  // frameType's low 7 bits fall in 0-14) within [fromOffset, toOffset).
+  // Used to empirically find the real per-frame size against a real file
+  // when the documented dataPayloadSize doesn't seem to produce aligned
+  // frames -- see the "Scan for frame boundary" debug button.
+  function scanForFrameBoundaries(fileBytes, fromOffset, toOffset, expectedMeasurementType) {
+    var candidates = [];
+    var end = Math.min(toOffset, fileBytes.length - 10);
+    for (var offset = fromOffset; offset < end; offset++) {
+      if (fileBytes[offset] !== expectedMeasurementType) continue;
+      var frameType = fileBytes[offset + 9] & 0x7f;
+      if (frameType <= 14) {
+        candidates.push({ offset: offset, frameType: frameType, compressed: (fileBytes[offset + 9] & 0x80) !== 0 });
+      }
+    }
+    return candidates;
+  }
+
   // =====================================================================
   // PmdSetting decoding (from PmdSetting.kt): a simple repeated
   // [typeId(1)][count(1)][count x fieldSize bytes] structure. Only the
@@ -733,6 +752,7 @@
     OFFLINE_HEADER_MAGIC: OFFLINE_HEADER_MAGIC,
     parseOfflineRecordingHeader: parseOfflineRecordingHeader,
     splitFrameStream: splitFrameStream,
+    scanForFrameBoundaries: scanForFrameBoundaries,
     parsePmdSettings: parsePmdSettings,
     readFloat32LE: readFloat32LE,
     decodeAccRecordingFile: decodeAccRecordingFile,

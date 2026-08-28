@@ -1473,6 +1473,57 @@
       });
       tdActions.appendChild(decodeBtn);
       tdActions.appendChild(decodeResultEl);
+
+      var scanBtn = document.createElement("button");
+      scanBtn.className = "btn btn-ghost btn-sm";
+      scanBtn.type = "button";
+      scanBtn.textContent = "Scan for frame boundary";
+      scanBtn.style.marginBottom = "4px";
+      var scanResultEl = document.createElement("div");
+      scanResultEl.style.fontSize = "11px";
+      scanResultEl.style.color = "var(--ink-muted)";
+      scanResultEl.style.wordBreak = "break-word";
+      scanBtn.addEventListener("click", function () {
+        if (!swimmer.device || !swimmer.device.gatt || !swimmer.device.gatt.connected) {
+          scanResultEl.textContent = "sensor not connected";
+          return;
+        }
+        scanBtn.disabled = true;
+        scanResultEl.textContent = "finding ACC files…";
+        var targetPath = null;
+        getPsftpChannel(swimmer)
+          .then(function (mtuChar) {
+            return LanePulseOffline.findOfflineAccRecordings(mtuChar).then(function (results) {
+              if (!results.length) throw new Error("no ACC files found");
+              results.sort(function (a, b) { return a.size - b.size; });
+              targetPath = results[0].path;
+              scanResultEl.textContent = "fetching " + targetPath + "…";
+              return LanePulseOffline.getFile(mtuChar, targetPath);
+            });
+          })
+          .then(function (bytes) {
+            scanBtn.disabled = false;
+            var header = LanePulseOffline.parseOfflineRecordingHeader(bytes);
+            // scan a window around where frame 1 "should" start per the
+            // documented dataPayloadSize, wide enough to catch the real
+            // offset if that value doesn't actually match this file
+            var expectedFrame1 = header.dataOffset + header.dataPayloadSize;
+            var from = Math.max(header.dataOffset + 1, expectedFrame1 - 150);
+            var to = expectedFrame1 + 150;
+            var candidates = LanePulseOffline.scanForFrameBoundaries(bytes, from, to, bytes[header.dataOffset]);
+            scanResultEl.textContent = "dataOffset=" + header.dataOffset + " documented dataPayloadSize=" + header.dataPayloadSize +
+              " expectedFrame1@" + expectedFrame1 + " scanned[" + from + "," + to + ") measurementType=" + bytes[header.dataOffset] +
+              " -- candidates: " + (candidates.length
+                ? candidates.map(function (c) { return c.offset + " (delta " + (c.offset - header.dataOffset) + ", frameType=" + c.frameType + (c.compressed ? " compressed" : " raw") + ")"; }).join(", ")
+                : "none found");
+          })
+          .catch(function (err) {
+            scanBtn.disabled = false;
+            scanResultEl.textContent = "failed: " + err.message + (targetPath ? " (path: " + targetPath + ")" : "");
+          });
+      });
+      tdActions.appendChild(scanBtn);
+      tdActions.appendChild(scanResultEl);
     }
 
     var removeBtn = document.createElement("button");

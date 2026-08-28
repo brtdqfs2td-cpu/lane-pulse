@@ -320,6 +320,18 @@ var derivedFile = buildFullTestFile(derivedSettings);
 assertThrows(function () { O.decodeAccRecordingFile(derivedFile); }, "decodeAccRecordingFile rejects a derived-measurement recording");
 
 // ---------------------------------------------------------------------
+// scanForFrameBoundaries -- a real envelope at offset 5 (measurementType=2),
+// noise everywhere else, one false-positive-shaped decoy at offset 20 with
+// the wrong measurementType (must NOT match).
+// ---------------------------------------------------------------------
+var scanBytes = new Array(40).fill(0xff);
+scanBytes[5] = 2; scanBytes[5 + 9] = 0x81; // valid: type=2, frameType byte 0x81 -> compressed, type 1
+scanBytes[20] = 3; scanBytes[20 + 9] = 0x81; // wrong measurementType, must be excluded
+var scanResults = O.scanForFrameBoundaries(scanBytes, 0, 40, 2);
+assertEqual(scanResults.length, 1, "scanForFrameBoundaries: finds exactly the one matching-type candidate");
+assertEqual(scanResults[0], { offset: 5, frameType: 1, compressed: true }, "scanForFrameBoundaries: candidate details are correct");
+
+// ---------------------------------------------------------------------
 console.log("");
 if (failures > 0) {
   console.log(failures + " FAILURE(S)");
