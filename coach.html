@@ -1300,230 +1300,76 @@
     var tdActions = document.createElement("td");
     tdActions.style.minWidth = "160px";
 
-    // Temporary debug control for the offline-recording (PMD+PSFTP) work --
-    // first real-hardware test: can we even connect to the PSFTP service
-    // and list its root directory. Everything downstream (finding/decoding
-    // ACC recordings) builds on this working first.
+    // Offline recording sync (PMD+PSFTP): connects, walks the sensor's
+    // offline storage for every ACC recording, and decodes each one.
+    // Replaces the earlier one-button-per-protocol-step debug UI now that
+    // the underlying decode has been proven against real hardware across
+    // multiple files -- this is the real user-facing action, not a debug aid.
     if (window.LanePulseOffline) {
-      var debugBtn = document.createElement("button");
-      debugBtn.className = "btn btn-ghost btn-sm";
-      debugBtn.type = "button";
-      debugBtn.textContent = "PSFTP debug";
-      debugBtn.style.marginBottom = "4px";
-      var debugResultEl = document.createElement("div");
-      debugResultEl.style.fontSize = "11px";
-      debugResultEl.style.color = "var(--ink-muted)";
-      debugResultEl.style.marginBottom = "6px";
-      debugResultEl.style.wordBreak = "break-word";
-      debugBtn.addEventListener("click", function () {
+      var syncOfflineBtn = document.createElement("button");
+      syncOfflineBtn.className = "btn btn-ghost btn-sm";
+      syncOfflineBtn.type = "button";
+      syncOfflineBtn.textContent = "Sync offline recordings";
+      syncOfflineBtn.style.marginBottom = "4px";
+      var syncOfflineResultEl = document.createElement("div");
+      syncOfflineResultEl.style.fontSize = "11px";
+      syncOfflineResultEl.style.color = "var(--ink-muted)";
+      syncOfflineResultEl.style.wordBreak = "break-word";
+      syncOfflineBtn.addEventListener("click", function () {
         if (!swimmer.device || !swimmer.device.gatt || !swimmer.device.gatt.connected) {
-          debugResultEl.textContent = "sensor not connected";
+          syncOfflineResultEl.textContent = "sensor not connected";
           return;
         }
-        debugBtn.disabled = true;
-        debugResultEl.textContent = "connecting to PSFTP…";
+        syncOfflineBtn.disabled = true;
+        syncOfflineResultEl.textContent = "finding offline recordings…";
+        var mtuCharRef = null;
         getPsftpChannel(swimmer)
           .then(function (mtuChar) {
-            debugResultEl.textContent = "listing " + LanePulseOffline.OFFLINE_ROOT_PATH + " …";
-            return LanePulseOffline.listDirectory(mtuChar, LanePulseOffline.OFFLINE_ROOT_PATH);
+            mtuCharRef = mtuChar;
+            return LanePulseOffline.findOfflineAccRecordings(mtuChar);
           })
-          .then(function (entries) {
-            debugBtn.disabled = false;
-            debugResultEl.textContent = entries.length
-              ? "OK — " + entries.length + " entries: " + entries.map(function (e) { return e.name; }).join(", ")
-              : "OK — directory is empty";
-          })
-          .catch(function (err) {
-            debugBtn.disabled = false;
-            debugResultEl.textContent = "failed: " + err.message;
-          });
-      });
-      tdActions.appendChild(debugBtn);
-      tdActions.appendChild(debugResultEl);
-
-      var findAccBtn = document.createElement("button");
-      findAccBtn.className = "btn btn-ghost btn-sm";
-      findAccBtn.type = "button";
-      findAccBtn.textContent = "Find ACC files";
-      findAccBtn.style.marginBottom = "4px";
-      var findAccResultEl = document.createElement("div");
-      findAccResultEl.style.fontSize = "11px";
-      findAccResultEl.style.color = "var(--ink-muted)";
-      findAccResultEl.style.wordBreak = "break-word";
-      findAccBtn.addEventListener("click", function () {
-        if (!swimmer.device || !swimmer.device.gatt || !swimmer.device.gatt.connected) {
-          findAccResultEl.textContent = "sensor not connected";
-          return;
-        }
-        findAccBtn.disabled = true;
-        findAccResultEl.textContent = "walking " + LanePulseOffline.OFFLINE_ROOT_PATH + " (may take a bit)…";
-        getPsftpChannel(swimmer)
-          .then(function (mtuChar) { return LanePulseOffline.findOfflineAccRecordings(mtuChar); })
           .then(function (results) {
-            findAccBtn.disabled = false;
-            findAccResultEl.textContent = results.length
-              ? "OK — " + results.length + " ACC file" + (results.length === 1 ? "" : "s") + ": " +
-                results.map(function (r) { return r.path + " (" + r.size + "b)"; }).join(", ")
-              : "OK — no ACC files found";
-          })
-          .catch(function (err) {
-            findAccBtn.disabled = false;
-            findAccResultEl.textContent = "failed: " + err.message;
-          });
-      });
-      tdActions.appendChild(findAccBtn);
-      tdActions.appendChild(findAccResultEl);
-
-      var fetchBtn = document.createElement("button");
-      fetchBtn.className = "btn btn-ghost btn-sm";
-      fetchBtn.type = "button";
-      fetchBtn.textContent = "Fetch smallest file";
-      fetchBtn.style.marginBottom = "4px";
-      var fetchResultEl = document.createElement("div");
-      fetchResultEl.style.fontSize = "11px";
-      fetchResultEl.style.color = "var(--ink-muted)";
-      fetchResultEl.style.wordBreak = "break-word";
-      fetchBtn.addEventListener("click", function () {
-        if (!swimmer.device || !swimmer.device.gatt || !swimmer.device.gatt.connected) {
-          fetchResultEl.textContent = "sensor not connected";
-          return;
-        }
-        fetchBtn.disabled = true;
-        fetchResultEl.textContent = "finding ACC files…";
-        var targetPath = null;
-        getPsftpChannel(swimmer)
-          .then(function (mtuChar) {
-            return LanePulseOffline.findOfflineAccRecordings(mtuChar).then(function (results) {
-              if (!results.length) throw new Error("no ACC files found");
-              results.sort(function (a, b) { return a.size - b.size; });
-              targetPath = results[0].path;
-              fetchResultEl.textContent = "fetching " + targetPath + " (" + results[0].size + "b)…";
-              return LanePulseOffline.getFile(mtuChar, targetPath);
-            });
-          })
-          .then(function (bytes) {
-            fetchBtn.disabled = false;
-            var first = Array.prototype.slice.call(bytes, 0, 90);
-            var hex = first.map(function (b) { return ("0" + b.toString(16)).slice(-2); }).join(" ");
-            var summary = "OK — " + targetPath + ", " + bytes.length + " bytes. First 90: " + hex;
-            try {
-              var header = LanePulseOffline.parseOfflineRecordingHeader(bytes);
-              summary += " | PARSED: securityStrategy=" + header.securityStrategy +
-                " magic=0x" + header.magic.toString(16) + " version=" + header.version +
-                " startTimeRaw=\"" + header.startTimeRaw + "\" settingsLength=" + header.settingsLength +
-                " securityInfoLength=" + header.securityInfoLength + " dataPayloadSize=" + header.dataPayloadSize +
-                " dataOffset=" + header.dataOffset;
-            } catch (headerErr) {
-              summary += " | HEADER PARSE FAILED: " + headerErr.message;
+            if (!results.length) {
+              syncOfflineBtn.disabled = false;
+              syncOfflineResultEl.textContent = "OK — no ACC recordings found on sensor";
+              return;
             }
-            fetchResultEl.textContent = summary;
+            // fetch + decode one at a time -- only one GATT operation may be
+            // in flight per device at a time (see getPsftpChannel)
+            return results.reduce(function (chain, entry, i) {
+              return chain.then(function (soFar) {
+                syncOfflineResultEl.textContent = "decoding " + (i + 1) + "/" + results.length + ": " + entry.path + "…";
+                return LanePulseOffline.getFile(mtuCharRef, entry.path)
+                  .then(function (bytes) {
+                    var decoded = LanePulseOffline.decodeAccRecordingFile(bytes);
+                    soFar.push({ path: entry.path, size: entry.size, ok: true, frameCount: decoded.frameCount, sampleCount: decoded.samples.length });
+                    return soFar;
+                  })
+                  .catch(function (err) {
+                    soFar.push({ path: entry.path, size: entry.size, ok: false, error: err.message });
+                    return soFar;
+                  });
+              });
+            }, Promise.resolve([]));
           })
-          .catch(function (err) {
-            fetchBtn.disabled = false;
-            fetchResultEl.textContent = "failed: " + err.message + (targetPath ? " (path: " + targetPath + ")" : "");
-          });
-      });
-      tdActions.appendChild(fetchBtn);
-      tdActions.appendChild(fetchResultEl);
-
-      var decodeBtn = document.createElement("button");
-      decodeBtn.className = "btn btn-ghost btn-sm";
-      decodeBtn.type = "button";
-      decodeBtn.textContent = "Decode smallest file";
-      decodeBtn.style.marginBottom = "4px";
-      var decodeResultEl = document.createElement("div");
-      decodeResultEl.style.fontSize = "11px";
-      decodeResultEl.style.color = "var(--ink-muted)";
-      decodeResultEl.style.wordBreak = "break-word";
-      decodeBtn.addEventListener("click", function () {
-        if (!swimmer.device || !swimmer.device.gatt || !swimmer.device.gatt.connected) {
-          decodeResultEl.textContent = "sensor not connected";
-          return;
-        }
-        decodeBtn.disabled = true;
-        decodeResultEl.textContent = "finding ACC files…";
-        var targetPath = null;
-        getPsftpChannel(swimmer)
-          .then(function (mtuChar) {
-            return LanePulseOffline.findOfflineAccRecordings(mtuChar).then(function (results) {
-              if (!results.length) throw new Error("no ACC files found");
-              results.sort(function (a, b) { return a.size - b.size; });
-              targetPath = results[0].path;
-              decodeResultEl.textContent = "fetching " + targetPath + " (" + results[0].size + "b)…";
-              return LanePulseOffline.getFile(mtuChar, targetPath);
+          .then(function (fileResults) {
+            if (!fileResults) return; // the "no recordings found" branch already set its own message
+            syncOfflineBtn.disabled = false;
+            var okCount = fileResults.filter(function (r) { return r.ok; }).length;
+            var lines = fileResults.map(function (r) {
+              return r.ok
+                ? "✓ " + r.path + " — " + r.frameCount + " frames, " + r.sampleCount + " samples"
+                : "✗ " + r.path + " — " + r.error;
             });
-          })
-          .then(function (bytes) {
-            decodeResultEl.textContent = "decoding…";
-            var decoded = LanePulseOffline.decodeAccRecordingFile(bytes);
-            decodeBtn.disabled = false;
-            var s = decoded.samples;
-            var summary = "OK — " + targetPath + ": " + decoded.frameCount + " frames, " + s.length + " samples, " +
-              "sampleRate=" + decoded.sampleRate + "Hz, factor=" + decoded.factor + ", startTime=" + decoded.header.startTimeRaw;
-            if (s.length) {
-              summary += ". First sample: x=" + s[0].x + " y=" + s[0].y + " z=" + s[0].z +
-                ". Last sample: x=" + s[s.length - 1].x + " y=" + s[s.length - 1].y + " z=" + s[s.length - 1].z;
-            }
-            decodeResultEl.textContent = summary;
+            syncOfflineResultEl.textContent = okCount + "/" + fileResults.length + " decoded OK. " + lines.join(" | ");
           })
           .catch(function (err) {
-            decodeBtn.disabled = false;
-            decodeResultEl.textContent = "failed: " + err.message + (targetPath ? " (path: " + targetPath + ")" : "");
+            syncOfflineBtn.disabled = false;
+            syncOfflineResultEl.textContent = "failed: " + err.message;
           });
       });
-      tdActions.appendChild(decodeBtn);
-      tdActions.appendChild(decodeResultEl);
-
-      var scanBtn = document.createElement("button");
-      scanBtn.className = "btn btn-ghost btn-sm";
-      scanBtn.type = "button";
-      scanBtn.textContent = "Scan for frame boundary";
-      scanBtn.style.marginBottom = "4px";
-      var scanResultEl = document.createElement("div");
-      scanResultEl.style.fontSize = "11px";
-      scanResultEl.style.color = "var(--ink-muted)";
-      scanResultEl.style.wordBreak = "break-word";
-      scanBtn.addEventListener("click", function () {
-        if (!swimmer.device || !swimmer.device.gatt || !swimmer.device.gatt.connected) {
-          scanResultEl.textContent = "sensor not connected";
-          return;
-        }
-        scanBtn.disabled = true;
-        scanResultEl.textContent = "finding ACC files…";
-        var targetPath = null;
-        getPsftpChannel(swimmer)
-          .then(function (mtuChar) {
-            return LanePulseOffline.findOfflineAccRecordings(mtuChar).then(function (results) {
-              if (!results.length) throw new Error("no ACC files found");
-              results.sort(function (a, b) { return a.size - b.size; });
-              targetPath = results[0].path;
-              scanResultEl.textContent = "fetching " + targetPath + "…";
-              return LanePulseOffline.getFile(mtuChar, targetPath);
-            });
-          })
-          .then(function (bytes) {
-            scanBtn.disabled = false;
-            var header = LanePulseOffline.parseOfflineRecordingHeader(bytes);
-            // scan a window around where frame 1 "should" start per the
-            // documented dataPayloadSize, wide enough to catch the real
-            // offset if that value doesn't actually match this file
-            var expectedFrame1 = header.dataOffset + header.dataPayloadSize;
-            var from = Math.max(header.dataOffset + 1, expectedFrame1 - 150);
-            var to = expectedFrame1 + 150;
-            var candidates = LanePulseOffline.scanForFrameBoundaries(bytes, from, to, bytes[header.dataOffset]);
-            scanResultEl.textContent = "dataOffset=" + header.dataOffset + " documented dataPayloadSize=" + header.dataPayloadSize +
-              " expectedFrame1@" + expectedFrame1 + " scanned[" + from + "," + to + ") measurementType=" + bytes[header.dataOffset] +
-              " -- candidates: " + (candidates.length
-                ? candidates.map(function (c) { return c.offset + " (delta " + (c.offset - header.dataOffset) + ", frameType=" + c.frameType + (c.compressed ? " compressed" : " raw") + ")"; }).join(", ")
-                : "none found");
-          })
-          .catch(function (err) {
-            scanBtn.disabled = false;
-            scanResultEl.textContent = "failed: " + err.message + (targetPath ? " (path: " + targetPath + ")" : "");
-          });
-      });
-      tdActions.appendChild(scanBtn);
-      tdActions.appendChild(scanResultEl);
+      tdActions.appendChild(syncOfflineBtn);
+      tdActions.appendChild(syncOfflineResultEl);
     }
 
     var removeBtn = document.createElement("button");
