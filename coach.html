@@ -9,6 +9,7 @@
 <link rel="manifest" href="coach.manifest.json">
 <link rel="icon" href="icons/coach-512.png" type="image/png">
 <link rel="apple-touch-icon" href="icons/coach-192.png">
+<script src="offline-recording.js"></script>
 <style>
   /* Self-hosted fonts (Manrope variable + IBM Plex Mono statics, latin subset) —
      keeps the app working offline and off Google's network entirely. */
@@ -1277,6 +1278,51 @@
     tdRoster.appendChild(rosterSelect);
 
     var tdActions = document.createElement("td");
+    tdActions.style.minWidth = "160px";
+
+    // Temporary debug control for the offline-recording (PMD+PSFTP) work --
+    // first real-hardware test: can we even connect to the PSFTP service
+    // and list its root directory. Everything downstream (finding/decoding
+    // ACC recordings) builds on this working first.
+    if (window.LanePulseOffline) {
+      var debugBtn = document.createElement("button");
+      debugBtn.className = "btn btn-ghost btn-sm";
+      debugBtn.type = "button";
+      debugBtn.textContent = "PSFTP debug";
+      debugBtn.style.marginBottom = "4px";
+      var debugResultEl = document.createElement("div");
+      debugResultEl.style.fontSize = "11px";
+      debugResultEl.style.color = "var(--ink-muted)";
+      debugResultEl.style.marginBottom = "6px";
+      debugResultEl.style.wordBreak = "break-word";
+      debugBtn.addEventListener("click", function () {
+        if (!swimmer.device || !swimmer.device.gatt || !swimmer.device.gatt.connected) {
+          debugResultEl.textContent = "sensor not connected";
+          return;
+        }
+        debugBtn.disabled = true;
+        debugResultEl.textContent = "connecting to PSFTP…";
+        swimmer.device.gatt.getPrimaryService(LanePulseOffline.PSFTP_SERVICE_UUID)
+          .then(function (service) { return service.getCharacteristic(LanePulseOffline.PSFTP_MTU_CHAR_UUID); })
+          .then(function (mtuChar) {
+            debugResultEl.textContent = "listing " + LanePulseOffline.OFFLINE_ROOT_PATH + " …";
+            return LanePulseOffline.listDirectory(mtuChar, LanePulseOffline.OFFLINE_ROOT_PATH);
+          })
+          .then(function (entries) {
+            debugBtn.disabled = false;
+            debugResultEl.textContent = entries.length
+              ? "OK — " + entries.length + " entries: " + entries.map(function (e) { return e.name; }).join(", ")
+              : "OK — directory is empty";
+          })
+          .catch(function (err) {
+            debugBtn.disabled = false;
+            debugResultEl.textContent = "failed: " + err.message;
+          });
+      });
+      tdActions.appendChild(debugBtn);
+      tdActions.appendChild(debugResultEl);
+    }
+
     var removeBtn = document.createElement("button");
     removeBtn.className = "btn btn-ghost btn-sm";
     removeBtn.type = "button";

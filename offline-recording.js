@@ -31,9 +31,15 @@
   // GATT UUIDs (exact, from BlePsFtpUtils.kt / BlePMDClient.kt)
   // =====================================================================
   var PSFTP_SERVICE_UUID = "0000feee-0000-1000-8000-00805f9b34fb";
+  // The MTU characteristic is the one actually used for GET-style
+  // request/response (write the request here, response notifications
+  // arrive here too -- confirmed directly from BlePsFtpClient.kt's
+  // request() and processServiceData()). D2H/H2D exist for a separate
+  // notification channel and file-upload (PUT) support respectively --
+  // neither is needed for what Lane Pulse does (read-only GET/list).
   var PSFTP_MTU_CHAR_UUID = "fb005c51-02e7-f387-1cad-8acd2d8df0c8";
-  var PSFTP_D2H_CHAR_UUID = "fb005c52-02e7-f387-1cad-8acd2d8df0c8"; // notify, device -> host
-  var PSFTP_H2D_CHAR_UUID = "fb005c53-02e7-f387-1cad-8acd2d8df0c8"; // write, host -> device
+  var PSFTP_D2H_CHAR_UUID = "fb005c52-02e7-f387-1cad-8acd2d8df0c8"; // unused by Lane Pulse
+  var PSFTP_H2D_CHAR_UUID = "fb005c53-02e7-f387-1cad-8acd2d8df0c8"; // unused by Lane Pulse (PUT only)
   var PMD_SERVICE_UUID = "fb005c80-02e7-f387-1cad-8acd2d8df0c8";
   var PMD_CONTROL_CHAR_UUID = "fb005c81-02e7-f387-1cad-8acd2d8df0c8";
   var PMD_DATA_CHAR_UUID = "fb005c82-02e7-f387-1cad-8acd2d8df0c8";
@@ -382,6 +388,127 @@
     return typePart; // "ACC", "GYRO", "MAG", "PPG", "PPI", "HR", "TEMP", "SKINTEMP"
   }
 
+  // =====================================================================
+  // GATT orchestration -- browser-only (uses navigator.bluetooth
+  // characteristic objects), NOT covered by the Node unit tests. This is
+  // the one part of the module that can only be verified against real
+  // hardware. Confirmed from BlePsFtpClient.kt: GET-style request/response
+  // both happen on the MTU characteristic -- write the RFC76-framed
+  // request there, and the response arrives as notifications on that same
+  // characteristic. D2H/H2D are not used for this (D2H is a separate
+  // notification channel, H2D is for file uploads) -- deliberately not
+  // touched here to keep the first real test as small a surface as
+  // possible.
+  //
+  // MTU chunk size: Web Bluetooth doesn't expose the real negotiated ATT
+  // MTU reliably, so this conservatively uses 20 bytes (the guaranteed-
+  // safe default BLE payload) rather than guessing higher. Correct in
+  // every case, just more chunking overhead than an optimal negotiated
+  // size would need -- fine to tune later once real hardware confirms
+  // what's actually negotiated.
+  // =====================================================================
+  var PSFTP_CHUNK_SIZE = 20;
+  var PSFTP_TIMEOUT_MS = 15000;
+
+  function psftpRequest(mtuChar, command, path) {
+    var header = encodePbPFtpOperation(command, path);
+    var message = new Uint8Array(makeRfc60Request(header));
+    var frames = buildRfc76Frames(message, PSFTP_CHUNK_SIZE);
+    var reassembler = createRfc76Reassembler();
+
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timeoutId = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error("PSFTP request timed out after " + PSFTP_TIMEOUT_MS + "ms (path: " + path + ")"));
+      }, PSFTP_TIMEOUT_MS);
+
+      function cleanup() {
+        clearTimeout(timeoutId);
+        mtuChar.removeEventListener("characteristicvaluechanged", onNotify);
+      }
+
+      function onNotify(evt) {
+        if (settled) return;
+        var packet = new Uint8Array(evt.target.value.buffer);
+        var result;
+        try {
+          result = reassembler.pushPacket(packet);
+        } catch (err) {
+          settled = true;
+          cleanup();
+          reject(err);
+          return;
+        }
+        if (result.done) {
+          settled = true;
+          cleanup();
+          if (result.error !== null && result.error !== 0) {
+            reject(new Error("PSFTP error code " + result.error + " (path: " + path + ")"));
+          } else {
+            resolve(result.payload);
+          }
+        }
+      }
+
+      mtuChar.addEventListener("characteristicvaluechanged", onNotify);
+      mtuChar.startNotifications()
+        .then(function () {
+          var i = 0;
+          function sendNext() {
+            if (i >= frames.length) return Promise.resolve();
+            return mtuChar.writeValueWithoutResponse(frames[i]).then(function () {
+              i++;
+              return sendNext();
+            });
+          }
+          return sendNext();
+        })
+        .catch(function (err) {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(err);
+        });
+    });
+  }
+
+  function listDirectory(mtuChar, path) {
+    return psftpRequest(mtuChar, PFTP_COMMAND.GET, path).then(function (payload) {
+      return decodePbPFtpDirectory(payload);
+    });
+  }
+
+  function getFile(mtuChar, path) {
+    return psftpRequest(mtuChar, PFTP_COMMAND.GET, path);
+  }
+
+  // Recursively walks /U/0/{date}/R/{time}/ and returns every entry whose
+  // name maps to an ACC recording, with its full path attached.
+  function findOfflineAccRecordings(mtuChar) {
+    function walk(path) {
+      return listDirectory(mtuChar, path).then(function (entries) {
+        var results = [];
+        var subWalks = [];
+        entries.forEach(function (entry) {
+          var isDirectory = entry.name.charAt(entry.name.length - 1) === "/";
+          if (isDirectory) {
+            subWalks.push(walk(path + entry.name));
+          } else if (measurementTypeFromFileName(entry.name) === "ACC") {
+            results.push({ path: path + entry.name, size: entry.size });
+          }
+        });
+        return Promise.all(subWalks).then(function (subResults) {
+          subResults.forEach(function (r) { results = results.concat(r); });
+          return results;
+        });
+      });
+    }
+    return walk(OFFLINE_ROOT_PATH);
+  }
+
   return {
     // GATT UUIDs
     PSFTP_SERVICE_UUID: PSFTP_SERVICE_UUID,
@@ -412,6 +539,12 @@
     getTimeStamps: getTimeStamps,
     decodeAccFrame: decodeAccFrame,
     readSignedInt: readSignedInt,
-    measurementTypeFromFileName: measurementTypeFromFileName
+    measurementTypeFromFileName: measurementTypeFromFileName,
+
+    // GATT orchestration (browser-only, untested by the Node suite)
+    psftpRequest: psftpRequest,
+    listDirectory: listDirectory,
+    getFile: getFile,
+    findOfflineAccRecordings: findOfflineAccRecordings
   };
 });
