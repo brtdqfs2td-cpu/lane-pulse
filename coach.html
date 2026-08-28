@@ -1305,7 +1305,11 @@
         }
         debugBtn.disabled = true;
         debugResultEl.textContent = "connecting to PSFTP…";
-        swimmer.device.gatt.getPrimaryService(LanePulseOffline.PSFTP_SERVICE_UUID)
+        // A fresh connect() call, even when already connected, is needed
+        // before accessing a service beyond what addSwimmer() originally
+        // negotiated -- same pattern addSwimmer() itself already uses.
+        swimmer.device.gatt.connect()
+          .then(function (server) { return server.getPrimaryService(LanePulseOffline.PSFTP_SERVICE_UUID); })
           .then(function (service) { return service.getCharacteristic(LanePulseOffline.PSFTP_MTU_CHAR_UUID); })
           .then(function (mtuChar) {
             debugResultEl.textContent = "listing " + LanePulseOffline.OFFLINE_ROOT_PATH + " …";
