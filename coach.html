@@ -1373,6 +1373,47 @@
       });
       tdActions.appendChild(findAccBtn);
       tdActions.appendChild(findAccResultEl);
+
+      var fetchBtn = document.createElement("button");
+      fetchBtn.className = "btn btn-ghost btn-sm";
+      fetchBtn.type = "button";
+      fetchBtn.textContent = "Fetch smallest file";
+      fetchBtn.style.marginBottom = "4px";
+      var fetchResultEl = document.createElement("div");
+      fetchResultEl.style.fontSize = "11px";
+      fetchResultEl.style.color = "var(--ink-muted)";
+      fetchResultEl.style.wordBreak = "break-word";
+      fetchBtn.addEventListener("click", function () {
+        if (!swimmer.device || !swimmer.device.gatt || !swimmer.device.gatt.connected) {
+          fetchResultEl.textContent = "sensor not connected";
+          return;
+        }
+        fetchBtn.disabled = true;
+        fetchResultEl.textContent = "finding ACC files…";
+        var targetPath = null;
+        getPsftpChannel(swimmer)
+          .then(function (mtuChar) {
+            return LanePulseOffline.findOfflineAccRecordings(mtuChar).then(function (results) {
+              if (!results.length) throw new Error("no ACC files found");
+              results.sort(function (a, b) { return a.size - b.size; });
+              targetPath = results[0].path;
+              fetchResultEl.textContent = "fetching " + targetPath + " (" + results[0].size + "b)…";
+              return LanePulseOffline.getFile(mtuChar, targetPath);
+            });
+          })
+          .then(function (bytes) {
+            fetchBtn.disabled = false;
+            var first = Array.prototype.slice.call(bytes, 0, 32);
+            var hex = first.map(function (b) { return ("0" + b.toString(16)).slice(-2); }).join(" ");
+            fetchResultEl.textContent = "OK — " + targetPath + ", " + bytes.length + " bytes. First 32: " + hex;
+          })
+          .catch(function (err) {
+            fetchBtn.disabled = false;
+            fetchResultEl.textContent = "failed: " + err.message + (targetPath ? " (path: " + targetPath + ")" : "");
+          });
+      });
+      tdActions.appendChild(fetchBtn);
+      tdActions.appendChild(fetchResultEl);
     }
 
     var removeBtn = document.createElement("button");
