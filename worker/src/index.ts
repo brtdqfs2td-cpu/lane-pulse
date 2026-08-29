@@ -373,6 +373,57 @@ async function handleAddMetric(swimmerId: string, request: Request, env: Env): P
 }
 
 // ---------------------------------------------------------------
+// POST /offline-recordings -- coach-only, store a decoded offline ACC
+// recording (already pulled + decoded client-side via the PMD/PSFTP
+// stack in offline-recording.js). Samples are stored as a single JSON
+// blob rather than one row per sample -- a recording is a few hundred to
+// a couple thousand samples, and there's no query pattern yet that needs
+// per-sample SQL access, so a blob keeps this simple until one exists.
+// ---------------------------------------------------------------
+interface OfflineRecordingPayload {
+  swimmerId: number;
+  recordingPath: string;
+  deviceStartTime?: string;
+  sampleRateHz?: number;
+  frameCount?: number;
+  samples: Array<{ timeStamp: string; x: number; y: number; z: number }>;
+}
+
+async function handlePostOfflineRecording(request: Request, env: Env): Promise<Response> {
+  const authFail = requireCoachAuth(request, env);
+  if (authFail) return authFail;
+
+  let payload: OfflineRecordingPayload;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ error: "invalid JSON body" }, 400);
+  }
+  if (!payload.swimmerId || !payload.recordingPath || !Array.isArray(payload.samples) || payload.samples.length === 0) {
+    return json({ error: "swimmerId, recordingPath, and a non-empty samples array are required" }, 400);
+  }
+
+  const client = createClient(env);
+  try {
+    await client.connect();
+    const result = await client.query(
+      `INSERT INTO offline_acc_recordings
+         (swimmer_id, recording_path, device_start_time, sample_rate_hz, frame_count, sample_count, samples_json)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING recording_id`,
+      [payload.swimmerId, payload.recordingPath, payload.deviceStartTime ?? null,
+       payload.sampleRateHz ?? null, payload.frameCount ?? null, payload.samples.length,
+       JSON.stringify(payload.samples)]
+    );
+    return json({ ok: true, recordingId: result.rows[0].recording_id }, 201);
+  } catch (err) {
+    return json({ error: "database error", detail: String(err) }, 500);
+  } finally {
+    await client.end();
+  }
+}
+
+// ---------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------
 export default {
@@ -406,6 +457,9 @@ export default {
     const metricsMatch = path.match(/^\/roster\/swimmers\/(\d+)\/metrics$/);
     if (metricsMatch && request.method === "POST") {
       return handleAddMetric(metricsMatch[1], request, env);
+    }
+    if (path === "/offline-recordings" && request.method === "POST") {
+      return handlePostOfflineRecording(request, env);
     }
     const summaryMatch = path.match(/^\/swimmer\/([^/]+)\/summary$/);
     if (summaryMatch && request.method === "GET") {

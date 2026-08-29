@@ -1342,8 +1342,45 @@
                 return LanePulseOffline.getFile(mtuCharRef, entry.path)
                   .then(function (bytes) {
                     var decoded = LanePulseOffline.decodeAccRecordingFile(bytes);
-                    soFar.push({ path: entry.path, size: entry.size, ok: true, frameCount: decoded.frameCount, sampleCount: decoded.samples.length });
-                    return soFar;
+                    var result = { path: entry.path, size: entry.size, ok: true, frameCount: decoded.frameCount, sampleCount: decoded.samples.length };
+                    if (!swimmer.rosterSwimmerId) {
+                      result.syncSkippedReason = "not linked to a roster swimmer";
+                      soFar.push(result);
+                      return soFar;
+                    }
+                    if (!apiConfig.baseUrl || !apiConfig.coachKey) {
+                      result.syncSkippedReason = "backend not connected";
+                      soFar.push(result);
+                      return soFar;
+                    }
+                    syncOfflineResultEl.textContent = "syncing " + (i + 1) + "/" + results.length + ": " + entry.path + "…";
+                    // BigInt timestamps aren't JSON-serializable -- stringify them
+                    var samplesForApi = decoded.samples.map(function (s) {
+                      return { timeStamp: s.timeStamp.toString(), x: s.x, y: s.y, z: s.z };
+                    });
+                    return apiFetch("/offline-recordings", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        swimmerId: swimmer.rosterSwimmerId,
+                        recordingPath: entry.path,
+                        deviceStartTime: decoded.header.startTimeRaw,
+                        sampleRateHz: decoded.sampleRate,
+                        frameCount: decoded.frameCount,
+                        samples: samplesForApi
+                      })
+                    })
+                      .then(function (res) {
+                        if (!res.ok) throw new Error("sync HTTP " + res.status);
+                        result.synced = true;
+                        soFar.push(result);
+                        return soFar;
+                      })
+                      .catch(function (syncErr) {
+                        result.syncError = syncErr.message;
+                        soFar.push(result);
+                        return soFar;
+                      });
                   })
                   .catch(function (err) {
                     soFar.push({ path: entry.path, size: entry.size, ok: false, error: err.message });
@@ -1357,9 +1394,12 @@
             syncOfflineBtn.disabled = false;
             var okCount = fileResults.filter(function (r) { return r.ok; }).length;
             var lines = fileResults.map(function (r) {
-              return r.ok
-                ? "✓ " + r.path + " — " + r.frameCount + " frames, " + r.sampleCount + " samples"
-                : "✗ " + r.path + " — " + r.error;
+              if (!r.ok) return "✗ " + r.path + " — " + r.error;
+              var base = "✓ " + r.path + " — " + r.frameCount + " frames, " + r.sampleCount + " samples";
+              if (r.synced) return base + " (synced)";
+              if (r.syncSkippedReason) return base + " (not synced: " + r.syncSkippedReason + ")";
+              if (r.syncError) return base + " (sync failed: " + r.syncError + ")";
+              return base;
             });
             syncOfflineResultEl.textContent = okCount + "/" + fileResults.length + " decoded OK. " + lines.join(" | ");
           })
