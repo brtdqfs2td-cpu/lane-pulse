@@ -2,7 +2,7 @@
 
 // Bump this on any change to PRECACHE_URLS or when you want clients to
 // pick up new page/asset versions on next load.
-var CACHE_VERSION = "lane-pulse-v3";
+var CACHE_VERSION = "lane-pulse-v4";
 
 var PRECACHE_URLS = [
   "./",
@@ -44,9 +44,16 @@ self.addEventListener("activate", function (event) {
   );
 });
 
-// Stale-while-revalidate: serve from cache instantly when available (this is
-// what makes offline loads work), refresh the cache from the network in the
-// background so the next load picks up whatever changed.
+// Two strategies, split by asset type:
+//
+// - Fonts and icons are content-versioned and effectively immutable, so
+//   serve them cache-first for instant (and offline) loads.
+// - HTML and JS are served network-first: always fetch the live version
+//   when online (so code/page changes land on the very next load, with no
+//   cache-busting dance), falling back to the cached copy only when the
+//   network is unavailable. Stale-while-revalidate was serving an old
+//   offline-recording.js for a whole debugging session even in fresh
+//   incognito windows -- not worth the marginal speed on pages this small.
 self.addEventListener("fetch", function (event) {
   var req = event.request;
   if (req.method !== "GET") return;
@@ -54,19 +61,35 @@ self.addEventListener("fetch", function (event) {
   var url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
 
-  event.respondWith(
-    caches.open(CACHE_VERSION).then(function (cache) {
-      return cache.match(req).then(function (cached) {
-        var update = fetch(req).then(function (response) {
-          if (response && response.ok) cache.put(req, response.clone());
-          return response;
-        }).catch(function () { return null; });
+  var isImmutableAsset = /\.(woff2|png)$/.test(url.pathname);
 
-        if (cached) {
-          event.waitUntil(update); // refresh in the background, don't block the response
-          return cached;
-        }
-        return update.then(function (response) { return response || cached; });
+  if (isImmutableAsset) {
+    event.respondWith(
+      caches.open(CACHE_VERSION).then(function (cache) {
+        return cache.match(req).then(function (cached) {
+          if (cached) return cached;
+          return fetch(req).then(function (response) {
+            if (response && response.ok) cache.put(req, response.clone());
+            return response;
+          });
+        });
+      })
+    );
+    return;
+  }
+
+  event.respondWith(
+    fetch(req).then(function (response) {
+      if (response && response.ok) {
+        var copy = response.clone();
+        caches.open(CACHE_VERSION).then(function (cache) { cache.put(req, copy); });
+      }
+      return response;
+    }).catch(function () {
+      return caches.open(CACHE_VERSION).then(function (cache) {
+        return cache.match(req).then(function (cached) {
+          return cached || Response.error();
+        });
       });
     })
   );
