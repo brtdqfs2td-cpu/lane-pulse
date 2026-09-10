@@ -92,6 +92,23 @@ var reassembler3 = O.createRfc76Reassembler();
 var errResult = reassembler3.pushPacket(errorPacket);
 assertEqual(errResult, { done: true, error: 103, payload: null }, "RFC76 error packet decodes error code 103");
 
+// stats() -- diagnostic counters for a stalled transfer. Feed the
+// multi-frame round trip again but stop one packet short of LAST, then
+// check what stats() reports about the incomplete stream.
+var reassembler4 = O.createRfc76Reassembler();
+for (var g = 0; g < frames.length - 1; g++) reassembler4.pushPacket(frames[g]);
+var stalledStats = reassembler4.stats();
+assertEqual(stalledStats.packetCount, frames.length - 1, "reassembler.stats: counts packets received before the stall");
+assertEqual(stalledStats.sequenceGap, null, "reassembler.stats: no sequence gap on a clean (if incomplete) stream");
+assertEqual(stalledStats.lastStatus, 3, "reassembler.stats: last status is MORE (3) while still mid-stream");
+
+// stats() flags a sequence discontinuity (a dropped packet) -- skip frame 1
+var reassembler5 = O.createRfc76Reassembler();
+reassembler5.pushPacket(frames[0]);
+reassembler5.pushPacket(frames[2]); // frame 1 dropped
+var gapStats = reassembler5.stats();
+assertEqual(gapStats.sequenceGap, { expected: 1, got: 2 }, "reassembler.stats: records the first sequence-number gap (dropped packet)");
+
 // ---------------------------------------------------------------------
 // Delta-frame decompression -- hand-crafted per the documented algorithm:
 // 3 channels, 8-bit resolution (1 byte/channel signed ref samples),

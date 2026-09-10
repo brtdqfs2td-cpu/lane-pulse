@@ -206,18 +206,37 @@
   // response. Call with each packet as it arrives; returns
   // { done: false } while more are expected, or
   // { done: true, error: <code>|null, payload: Uint8Array } once complete.
+  // Also exposes stats() -- packet/byte counters, last status/seq seen, and
+  // the first sequence-number discontinuity if any -- purely for diagnosing
+  // a stalled transfer (a large file GET that never delivers its LAST
+  // packet). Recording only; it does not change reassembly behaviour.
   function createRfc76Reassembler() {
     var chunks = [];
+    var packetCount = 0;
+    var byteCount = 0;
+    var lastStatus = null;
+    var lastSeq = null;
+    var expectNextSeq = null;
+    var sequenceGap = null; // { expected, got } for the first gap seen
     return {
       pushPacket: function (packet) {
         var headerByte = packet[0];
         var status = (headerByte >> 1) & 0x03;
+        var seq = (headerByte >> 4) & 0x0f;
         var payload = packet.slice(RFC76_HEADER_SIZE);
+        packetCount += 1;
+        lastStatus = status;
+        lastSeq = seq;
+        if (expectNextSeq !== null && seq !== expectNextSeq && sequenceGap === null) {
+          sequenceGap = { expected: expectNextSeq, got: seq };
+        }
+        expectNextSeq = (seq + 1) & 0x0f;
         if (status === RFC76_STATUS_ERROR_OR_RESPONSE) {
           var errorCode = (payload[0] | (payload[1] << 8)) & 0xffff;
           return { done: true, error: errorCode, payload: null };
         }
         chunks.push(payload);
+        byteCount += payload.length;
         if (status === RFC76_STATUS_LAST) {
           var total = 0;
           for (var i = 0; i < chunks.length; i++) total += chunks[i].length;
@@ -227,6 +246,15 @@
           return { done: true, error: null, payload: out };
         }
         return { done: false };
+      },
+      stats: function () {
+        return {
+          packetCount: packetCount,
+          byteCount: byteCount,
+          lastStatus: lastStatus,
+          lastSeq: lastSeq,
+          sequenceGap: sequenceGap
+        };
       }
     };
   }
@@ -690,11 +718,21 @@
 
     return new Promise(function (resolve, reject) {
       var settled = false;
+      var framesWritten = 0;
+      var lastPacketAt = 0;
       var timeoutId = setTimeout(function () {
         if (settled) return;
         settled = true;
         cleanup();
-        reject(new Error("PSFTP request timed out after " + PSFTP_TIMEOUT_MS + "ms (path: " + path + ")"));
+        var s = reassembler.stats();
+        var sinceLastPacket = lastPacketAt ? (Date.now() - lastPacketAt) + "ms ago" : "no packets ever";
+        reject(new Error(
+          "PSFTP request timed out after " + PSFTP_TIMEOUT_MS + "ms (path: " + path + ") " +
+          "[req frames " + framesWritten + "/" + frames.length + " sent, resp packets " + s.packetCount +
+          ", bytes " + s.byteCount + ", last status " + s.lastStatus + ", last seq " + s.lastSeq +
+          ", seq gap " + (s.sequenceGap ? (s.sequenceGap.expected + "->" + s.sequenceGap.got) : "none") +
+          ", last packet " + sinceLastPacket + "]"
+        ));
       }, PSFTP_TIMEOUT_MS);
 
       function cleanup() {
@@ -704,6 +742,7 @@
 
       function onNotify(evt) {
         if (settled) return;
+        lastPacketAt = Date.now();
         var packet = new Uint8Array(evt.target.value.buffer);
         var result;
         try {
@@ -731,6 +770,7 @@
         if (i >= frames.length) return Promise.resolve();
         return mtuChar.writeValueWithoutResponse(frames[i]).then(function () {
           i++;
+          framesWritten = i;
           return sendNext();
         });
       }
