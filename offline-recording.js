@@ -696,14 +696,18 @@
   // what's actually negotiated.
   // =====================================================================
   var PSFTP_CHUNK_SIZE = 20;
-  // 15s was enough for a single isolated GET (a directory listing, or one
-  // file fetched by itself), but real hardware testing found that fetching
-  // several actual files back-to-back -- each one hundreds of 20-byte BLE
-  // notification packets, not the tiny payload a directory listing needs --
-  // routinely blew past 15s, timing out uniformly across every file in a
-  // multi-file sync (including one that had decoded fine moments earlier
-  // fetched on its own). Given generously for sustained sequential transfers.
-  var PSFTP_TIMEOUT_MS = 45000;
+  // Total ceiling for one request. Big .REC files stream at only ~13 KB/s
+  // over this link, so a genuinely large recording can legitimately take a
+  // while -- diagnostics showed one file still actively receiving (589 KB
+  // and counting) when a 45s ceiling fired.
+  var PSFTP_TIMEOUT_MS = 90000;
+  // If the response stream goes silent for this long *after at least one
+  // packet has arrived* (or after the request was fully written and nothing
+  // ever came back), the transfer has died -- fail fast instead of waiting
+  // out the full ceiling. Real hardware: a request issued while the previous
+  // file's stream was still draining would get a handful of stray packets
+  // and then nothing for ~40s.
+  var PSFTP_STALL_MS = 8000;
 
   // Assumes the caller has already started notifications on mtuChar --
   // deliberately does NOT call startNotifications() itself. Re-enabling an
@@ -720,29 +724,49 @@
       var settled = false;
       var framesWritten = 0;
       var lastPacketAt = 0;
+      var stallId = null;
+
+      function diagSuffix(reasonWord) {
+        var s = reassembler.stats();
+        var sinceLastPacket = lastPacketAt ? (Date.now() - lastPacketAt) + "ms ago" : "no packets ever";
+        return " (path: " + path + ") [req frames " + framesWritten + "/" + frames.length +
+          " sent, resp packets " + s.packetCount + ", bytes " + s.byteCount +
+          ", last status " + s.lastStatus + ", last seq " + s.lastSeq +
+          ", seq gap " + (s.sequenceGap ? (s.sequenceGap.expected + "->" + s.sequenceGap.got) : "none") +
+          ", last packet " + sinceLastPacket + "]";
+      }
+
       var timeoutId = setTimeout(function () {
         if (settled) return;
         settled = true;
         cleanup();
-        var s = reassembler.stats();
-        var sinceLastPacket = lastPacketAt ? (Date.now() - lastPacketAt) + "ms ago" : "no packets ever";
-        reject(new Error(
-          "PSFTP request timed out after " + PSFTP_TIMEOUT_MS + "ms (path: " + path + ") " +
-          "[req frames " + framesWritten + "/" + frames.length + " sent, resp packets " + s.packetCount +
-          ", bytes " + s.byteCount + ", last status " + s.lastStatus + ", last seq " + s.lastSeq +
-          ", seq gap " + (s.sequenceGap ? (s.sequenceGap.expected + "->" + s.sequenceGap.got) : "none") +
-          ", last packet " + sinceLastPacket + "]"
-        ));
+        reject(new Error("PSFTP request timed out after " + PSFTP_TIMEOUT_MS + "ms" + diagSuffix()));
       }, PSFTP_TIMEOUT_MS);
+
+      // Reset on every packet (and armed once the request is fully sent):
+      // fires when the stream has been silent long enough to call the
+      // transfer dead, well before the full ceiling.
+      function armStall() {
+        if (settled) return;
+        if (stallId) clearTimeout(stallId);
+        stallId = setTimeout(function () {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(new Error("PSFTP transfer stalled -- no packet for " + PSFTP_STALL_MS + "ms" + diagSuffix()));
+        }, PSFTP_STALL_MS);
+      }
 
       function cleanup() {
         clearTimeout(timeoutId);
+        if (stallId) clearTimeout(stallId);
         mtuChar.removeEventListener("characteristicvaluechanged", onNotify);
       }
 
       function onNotify(evt) {
         if (settled) return;
         lastPacketAt = Date.now();
+        armStall();
         var packet = new Uint8Array(evt.target.value.buffer);
         var result;
         try {
@@ -774,7 +798,9 @@
           return sendNext();
         });
       }
-      sendNext().catch(function (err) {
+      sendNext().then(function () {
+        armStall(); // a device that never answers at all still trips the stall timer, not just the ceiling
+      }).catch(function (err) {
         if (settled) return;
         settled = true;
         cleanup();
@@ -802,6 +828,34 @@
 
   function getFile(mtuChar, path) {
     return psftpRequest(mtuChar, PFTP_COMMAND.GET, path);
+  }
+
+  // Resolve once the channel has been silent (no notification) for quietMs.
+  // A timed-out or stalled transfer can leave the device still pushing
+  // packets for the previous file; firing the next request into that stream
+  // corrupts both. Call this between sequential fetches to let the previous
+  // transfer fully drain first. Caps its own wait so a device that just
+  // never goes quiet can't hang the caller forever.
+  function drainChannel(mtuChar, quietMs, maxWaitMs) {
+    quietMs = quietMs || 2500;
+    maxWaitMs = maxWaitMs || 20000;
+    return new Promise(function (resolve) {
+      var quietTimer = null;
+      var hardCap = null;
+      function finish() {
+        if (quietTimer) clearTimeout(quietTimer);
+        if (hardCap) clearTimeout(hardCap);
+        mtuChar.removeEventListener("characteristicvaluechanged", onAny);
+        resolve();
+      }
+      function onAny() {
+        if (quietTimer) clearTimeout(quietTimer);
+        quietTimer = setTimeout(finish, quietMs);
+      }
+      mtuChar.addEventListener("characteristicvaluechanged", onAny);
+      quietTimer = setTimeout(finish, quietMs);
+      hardCap = setTimeout(finish, maxWaitMs);
+    });
   }
 
   // Recursively walks /U/0/{date}/R/{time}/ and returns every entry whose
@@ -880,6 +934,7 @@
     preparePsftpChannel: preparePsftpChannel,
     listDirectory: listDirectory,
     getFile: getFile,
+    drainChannel: drainChannel,
     findOfflineAccRecordings: findOfflineAccRecordings
   };
 });

@@ -1334,11 +1334,15 @@
               syncOfflineResultEl.textContent = "OK — no ACC recordings found on sensor";
               return;
             }
+            // smallest first: quick wins land before we hit a giant file,
+            // and if the run bails partway the useful short recordings are
+            // already done
+            results.sort(function (a, b) { return (a.size || 0) - (b.size || 0); });
             // fetch + decode one at a time -- only one GATT operation may be
             // in flight per device at a time (see getPsftpChannel)
             return results.reduce(function (chain, entry, i) {
               return chain.then(function (soFar) {
-                syncOfflineResultEl.textContent = "decoding " + (i + 1) + "/" + results.length + ": " + entry.path + "…";
+                syncOfflineResultEl.textContent = "fetching " + (i + 1) + "/" + results.length + ": " + entry.path + " (" + entry.size + "b)…";
                 return LanePulseOffline.getFile(mtuCharRef, entry.path)
                   .then(function (bytes) {
                     var decoded = LanePulseOffline.decodeAccRecordingFile(bytes);
@@ -1385,6 +1389,14 @@
                   .catch(function (err) {
                     soFar.push({ path: entry.path, size: entry.size, ok: false, error: err.message });
                     return soFar;
+                  })
+                  .then(function (soFar) {
+                    // let the previous transfer fully drain before the next
+                    // request -- a slow/timed-out stream keeps arriving and
+                    // corrupts whatever request follows it
+                    if (i === results.length - 1) return soFar;
+                    syncOfflineResultEl.textContent = "waiting for channel to settle…";
+                    return LanePulseOffline.drainChannel(mtuCharRef, 2500).then(function () { return soFar; });
                   });
               });
             }, Promise.resolve([]));
