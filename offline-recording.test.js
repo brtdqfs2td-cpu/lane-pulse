@@ -506,6 +506,39 @@ assertEqual(
 );
 
 // ---------------------------------------------------------------------
+// findValidNextFrameStart -- the real-hardware failure this exists to fix:
+// looksLikeNextEnvelope's type+frameType match, checked at every byte of
+// real frame content, does occasionally find a false positive (real sensor
+// data isn't random noise -- certain byte values show up more than a
+// uniform 1/256 would suggest). A raw frame's content must always be a
+// whole number of fixed-width samples, so a false positive that lands
+// off that boundary can be detected and rejected structurally, without
+// ever needing to know whether it's "real" some other way.
+//
+// Frame 0: raw type 0 (1 byte/channel), 4 real samples (12 content bytes).
+// Byte 4 of that content (absolute offset 14) is deliberately set to 2
+// (matching measurementType) with a valid-looking frameType 9 bytes later
+// -- a textbook false positive, and NOT a multiple of 3 bytes from the
+// frame's start (14-10=4, 4%3=1). The frame's real boundary is at offset
+// 22 (10 + 12), where frame 1's genuine envelope actually starts.
+// ---------------------------------------------------------------------
+var falsePositiveTestBytes = new Array(40).fill(0xff);
+falsePositiveTestBytes[0] = 2; // frame 0 measurementType
+for (var fi = 1; fi <= 8; fi++) falsePositiveTestBytes[fi] = 0; // frame 0 timestamp (arbitrary)
+falsePositiveTestBytes[9] = 0x00; // frame 0 frameType: raw type 0
+var frame0Content = [1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1]; // index 4 (offset 14) = 2, the false positive
+for (var ci = 0; ci < frame0Content.length; ci++) falsePositiveTestBytes[10 + ci] = frame0Content[ci];
+falsePositiveTestBytes[22] = 2; // frame 1's REAL measurementType, at the true boundary
+for (var fi2 = 23; fi2 <= 30; fi2++) falsePositiveTestBytes[fi2] = 0; // frame 1 timestamp (also covers the false positive's own "frameType" byte at 23 -- 0x00 is valid either way)
+falsePositiveTestBytes[31] = 0x00; // frame 1 frameType: raw type 0
+var fpEnvelope = { isCompressedFrame: false, frameType: 0, measurementType: 2 };
+assertEqual(
+  O.findValidNextFrameStart(falsePositiveTestBytes, 10, fpEnvelope),
+  22,
+  "findValidNextFrameStart: rejects a false-positive match that isn't a whole number of raw samples from the frame start, finds the true boundary instead"
+);
+
+// ---------------------------------------------------------------------
 // walkAndDecodeAccFrames / decodeAccRecordingFile end-to-end via the
 // structural walk -- a raw frame followed by a compressed frame, with the
 // header's dataPayloadSize deliberately wrong (5, nowhere near either

@@ -641,9 +641,70 @@
     return -1;
   }
 
+  // A raw frame's content is always a whole number of fixed-width samples
+  // -- if a candidate boundary doesn't land on a multiple of the sample
+  // size, it CANNOT be the true boundary, whatever looksLikeNextEnvelope
+  // said, no matter how good it looked.
+  function isRawContentLengthValid(contentLength, step) {
+    var sampleByteSize = step * 3;
+    return contentLength > 0 && contentLength % sampleByteSize === 0;
+  }
+
+  // A compressed frame's content is a reference sample followed by delta
+  // blocks that each self-describe their own byte length -- re-walking
+  // that structure from a candidate boundary and requiring it to land
+  // EXACTLY on the boundary (no overrun, no leftover) is a hard structural
+  // fact a false-positive cut point essentially never satisfies by chance,
+  // unlike an earlier version of this walk that used this same block-
+  // walking logic to DECIDE where to jump (and compounded any error into a
+  // huge overshoot -- see findNextFrameStart above). Used only to validate
+  // a scan-found candidate here, so a wrong answer just means "reject and
+  // keep scanning," never "jump somewhere wrong."
+  function isCompressedContentLengthValid(fileBytes, contentStart, contentEnd, channels, refByteLen) {
+    var minLen = channels * refByteLen;
+    if (contentEnd - contentStart < minLen) return false;
+    var offset = contentStart + minLen;
+    while (offset < contentEnd) {
+      if (offset + 2 > contentEnd) return false; // trailing partial block header
+      var deltaSize = fileBytes[offset];
+      var sampleCount = fileBytes[offset + 1];
+      var byteLength = Math.ceil((sampleCount * deltaSize * channels) / 8);
+      var blockEnd = offset + 2 + byteLength;
+      if (blockEnd > contentEnd) return false; // this block would overrun the candidate boundary
+      offset = blockEnd;
+    }
+    return offset === contentEnd; // must land exactly on it, no leftover bytes
+  }
+
+  // Combines the scan with structural validation: keeps asking
+  // findNextFrameStart for the next type-matching candidate past the last
+  // rejected one until it finds one whose implied content length is
+  // actually well-formed for this frame's own format. This is what makes
+  // the walk robust against real sensor data -- looksLikeNextEnvelope's
+  // type+frameType match alone isn't rare enough to avoid false hits when
+  // checked at every byte of real (not random) content, but requiring the
+  // resulting content to *also* be structurally valid essentially never
+  // lets a false hit through.
+  function findValidNextFrameStart(fileBytes, contentStart, envelope) {
+    var isCompressed = envelope.isCompressedFrame;
+    var step = isCompressed ? null : ACC_RAW_BYTE_WIDTHS[envelope.frameType];
+    var minContentBytes = isCompressed ? (ACC_COMPRESSED_CHANNELS * ACC_COMPRESSED_REF_BYTE_LEN) : (step ? step * 3 : 1);
+    var searchFrom = contentStart + minContentBytes;
+    for (;;) {
+      var candidate = findNextFrameStart(fileBytes, searchFrom, envelope.measurementType);
+      if (candidate === -1) return -1;
+      if (!step && !isCompressed) return candidate; // unsupported raw type -- can't validate; decodeAccFrame will throw a clear error on this frame anyway
+      var valid = isCompressed
+        ? isCompressedContentLengthValid(fileBytes, contentStart, candidate, ACC_COMPRESSED_CHANNELS, ACC_COMPRESSED_REF_BYTE_LEN)
+        : isRawContentLengthValid(candidate - contentStart, step);
+      if (valid) return candidate;
+      searchFrom = candidate + 1; // false positive -- keep scanning past it
+    }
+  }
+
   // Walks the whole frame stream, finding each frame's real boundary via
-  // findNextFrameStart rather than guessing it from a documented size or
-  // parsing/jumping through content. This is what decodeAccRecordingFile
+  // findValidNextFrameStart rather than guessing it from a documented size
+  // or parsing/jumping through content. This is what decodeAccRecordingFile
   // actually uses -- locateFrameOffsets/determineRealFrameStride above are
   // kept as simpler, exported utilities (and still what the debug tooling's
   // diagnostics are built on) but proved insufficient on real hardware:
@@ -663,18 +724,7 @@
         break; // not enough bytes left for even one more envelope -- done
       }
       var contentStart = offset + 10;
-      // don't start scanning for "the next frame" within this frame's own
-      // guaranteed-real leading bytes (its reference sample, for
-      // compressed; its first sample, for raw) -- avoids a same-frame
-      // false match right at the start of its own content
-      var minContentBytes;
-      if (envelope.isCompressedFrame) {
-        minContentBytes = ACC_COMPRESSED_CHANNELS * ACC_COMPRESSED_REF_BYTE_LEN;
-      } else {
-        var step = ACC_RAW_BYTE_WIDTHS[envelope.frameType];
-        minContentBytes = step ? step * 3 : 1;
-      }
-      var nextStart = findNextFrameStart(fileBytes, contentStart + minContentBytes, envelope.measurementType);
+      var nextStart = findValidNextFrameStart(fileBytes, contentStart, envelope);
       var contentEnd = (nextStart === -1) ? fileBytes.length : nextStart;
       try {
         envelope.dataContent = fileBytes.slice(contentStart, contentEnd);
@@ -1020,6 +1070,9 @@
     locateFrameOffsets: locateFrameOffsets,
     looksLikeNextEnvelope: looksLikeNextEnvelope,
     findNextFrameStart: findNextFrameStart,
+    isRawContentLengthValid: isRawContentLengthValid,
+    isCompressedContentLengthValid: isCompressedContentLengthValid,
+    findValidNextFrameStart: findValidNextFrameStart,
     walkAndDecodeAccFrames: walkAndDecodeAccFrames,
     parsePmdSettings: parsePmdSettings,
     readFloat32LE: readFloat32LE,
