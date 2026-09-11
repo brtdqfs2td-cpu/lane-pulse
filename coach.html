@@ -246,6 +246,11 @@
   .practice-metric .u { font-family: var(--font-ui); font-size: 10px; color: var(--ink-muted); margin-left: 3px; }
   .history-empty { padding: 18px; text-align: center; color: var(--ink-muted); font-size: 13px; }
 
+  /* ---- offline recording chart ---- */
+  .offline-chart-container { padding: 4px 13px 13px; border-top: 1px solid var(--hairline); }
+  .offline-chart-container svg { width: 100%; height: 130px; display: block; }
+  .offline-chart-meta { font-size: 11px; color: var(--ink-muted); margin-top: 6px; }
+
   /* ---- roster table ---- */
   .card { background: var(--surface); border: 1px solid var(--hairline); border-radius: 14px; overflow: hidden; }
   .table-scroll { overflow-x: auto; }
@@ -375,6 +380,19 @@
   <div class="card">
     <div class="card-head-row">
       <div>
+        <span class="card-title">Synced offline recordings</span>
+        <span class="practice-hint">Accelerometer data pulled off sensors via "Sync offline recordings" on the Live roster below.</span>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="refreshOfflineRecordingsBtn" type="button">Refresh</button>
+    </div>
+    <div class="history-list" id="offlineRecordingsList">
+      <div class="history-empty">Connect the backend above to load synced recordings.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head-row">
+      <div>
         <span class="card-title">Practice</span>
         <span class="practice-hint" id="practiceHint">Not started — start a practice to log everyone's readings into history below.</span>
       </div>
@@ -482,7 +500,9 @@
     newRosterNameInput: document.getElementById("newRosterNameInput"),
     addRosterSwimmerBtn: document.getElementById("addRosterSwimmerBtn"),
     syncedHistoryList: document.getElementById("syncedHistoryList"),
-    refreshSyncedHistoryBtn: document.getElementById("refreshSyncedHistoryBtn")
+    refreshSyncedHistoryBtn: document.getElementById("refreshSyncedHistoryBtn"),
+    offlineRecordingsList: document.getElementById("offlineRecordingsList"),
+    refreshOfflineRecordingsBtn: document.getElementById("refreshOfflineRecordingsBtn")
   };
 
   function bluetoothSupported() { return !!(navigator.bluetooth && window.isSecureContext); }
@@ -745,6 +765,7 @@
         renderTeamRoster();
         renderAll(); // refresh the roster-link dropdowns in the live pairing table
         fetchSyncedHistory();
+        fetchOfflineRecordings();
       })
       .catch(function (err) {
         el.apiStatusText.textContent = "Connection failed — check the API URL and coach key (" + err.message + ").";
@@ -812,6 +833,164 @@
 
       el.syncedHistoryList.appendChild(block);
     });
+  }
+
+  function fetchOfflineRecordings() {
+    if (!apiConfig.baseUrl || !apiConfig.coachKey) return;
+    apiFetch("/offline-recordings")
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function (data) { renderOfflineRecordings(data.recordings || []); })
+      .catch(function (err) {
+        el.offlineRecordingsList.innerHTML = '<div class="history-empty">Couldn’t load synced recordings (' + err.message + ').</div>';
+      });
+  }
+  el.refreshOfflineRecordingsBtn.addEventListener("click", fetchOfflineRecordings);
+
+  function renderOfflineRecordings(rows) {
+    el.offlineRecordingsList.innerHTML = "";
+    if (!rows.length) {
+      el.offlineRecordingsList.innerHTML = '<div class="history-empty">No synced offline recordings yet.</div>';
+      return;
+    }
+
+    rows.forEach(function (r) {
+      var block = document.createElement("div");
+      block.className = "practice-block";
+
+      var head = document.createElement("div");
+      head.className = "practice-block-head";
+      var dateStr = r.device_start_time || "unknown time";
+      var d = r.device_start_time ? new Date(r.device_start_time.replace(" ", "T")) : null;
+      if (d && !isNaN(d.getTime())) {
+        dateStr = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) +
+          " " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+      }
+      var durationSec = (r.sample_rate_hz && r.sample_count) ? Math.round(r.sample_count / r.sample_rate_hz) : null;
+      head.innerHTML = "<strong>" + r.swimmer_name + "</strong><span>" + dateStr +
+        (durationSec != null ? " · ~" + formatDuration(durationSec * 1000) : "") +
+        " · " + r.frame_count + " frames, " + r.sample_count + " samples</span>";
+      block.appendChild(head);
+
+      var row = document.createElement("div");
+      row.className = "practice-swimmer-row";
+      row.style.gridTemplateColumns = "1fr auto";
+      var pathLabel = document.createElement("span");
+      pathLabel.textContent = r.recording_path;
+      pathLabel.style.fontFamily = "var(--font-mono)";
+      pathLabel.style.fontSize = "11px";
+      pathLabel.style.color = "var(--ink-muted)";
+      var viewBtn = document.createElement("button");
+      viewBtn.className = "btn btn-ghost btn-sm";
+      viewBtn.type = "button";
+      viewBtn.textContent = "View chart";
+      row.appendChild(pathLabel);
+      row.appendChild(viewBtn);
+      block.appendChild(row);
+
+      var chartContainer = document.createElement("div");
+      chartContainer.className = "offline-chart-container";
+      chartContainer.hidden = true;
+      block.appendChild(chartContainer);
+
+      var loaded = false;
+      viewBtn.addEventListener("click", function () {
+        if (!chartContainer.hidden) {
+          chartContainer.hidden = true;
+          viewBtn.textContent = "View chart";
+          return;
+        }
+        chartContainer.hidden = false;
+        viewBtn.textContent = "Hide chart";
+        if (loaded) return;
+        loaded = true;
+        chartContainer.innerHTML = '<div class="history-empty">Loading…</div>';
+        apiFetch("/offline-recordings/" + r.recording_id)
+          .then(function (res) {
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            return res.json();
+          })
+          .then(function (detail) {
+            chartContainer.innerHTML = "";
+            chartContainer.appendChild(buildAccChart(detail.samples));
+          })
+          .catch(function (err) {
+            loaded = false;
+            chartContainer.innerHTML = '<div class="history-empty">Couldn’t load chart (' + err.message + ').</div>';
+          });
+      });
+
+      el.offlineRecordingsList.appendChild(block);
+    });
+  }
+
+  // Renders acceleration magnitude (sqrt(x^2+y^2+z^2)) over the course of
+  // one recording as a simple inline-SVG area/line chart -- no charting
+  // library, matching the rest of this project's no-build-step, no-CDN
+  // approach. A recording can carry tens of thousands of samples, so the
+  // plotted line is downsampled to a fixed point budget; the reported
+  // min/avg/max stats below it are still computed from every real sample.
+  function buildAccChart(samples) {
+    var wrap = document.createElement("div");
+    if (!samples || !samples.length) {
+      wrap.innerHTML = '<div class="history-empty">No samples in this recording.</div>';
+      return wrap;
+    }
+
+    var mags = samples.map(function (s) { return Math.sqrt(s.x * s.x + s.y * s.y + s.z * s.z); });
+
+    var MAX_PLOT_POINTS = 400;
+    var stride = Math.max(1, Math.ceil(mags.length / MAX_PLOT_POINTS));
+    var plotted = [];
+    for (var i = 0; i < mags.length; i += stride) plotted.push(mags[i]);
+    if (plotted[plotted.length - 1] !== mags[mags.length - 1]) plotted.push(mags[mags.length - 1]);
+
+    var min = Math.min.apply(null, plotted);
+    var max = Math.max.apply(null, plotted);
+    var range = (max - min) || 1;
+
+    var W = 600, H = 130, padY = 8;
+    var innerH = H - padY * 2;
+    var coords = plotted.map(function (v, idx) {
+      var x = (idx / (plotted.length - 1 || 1)) * W;
+      var y = padY + innerH - ((v - min) / range) * innerH;
+      return x.toFixed(1) + "," + y.toFixed(1);
+    });
+    var linePath = "M" + coords.join(" L");
+    var areaPath = linePath + " L" + W + "," + H + " L0," + H + " Z";
+
+    var svgNs = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(svgNs, "svg");
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.setAttribute("preserveAspectRatio", "none");
+
+    var area = document.createElementNS(svgNs, "path");
+    area.setAttribute("d", areaPath);
+    area.setAttribute("fill", "var(--accent-soft)");
+    area.setAttribute("stroke", "none");
+    svg.appendChild(area);
+
+    var line = document.createElementNS(svgNs, "path");
+    line.setAttribute("d", linePath);
+    line.setAttribute("fill", "none");
+    line.setAttribute("stroke", "var(--accent)");
+    line.setAttribute("stroke-width", "1.6");
+    line.setAttribute("vector-effect", "non-scaling-stroke");
+    svg.appendChild(line);
+
+    wrap.appendChild(svg);
+
+    var avg = mags.reduce(function (a, b) { return a + b; }, 0) / mags.length;
+    var meta = document.createElement("div");
+    meta.className = "offline-chart-meta";
+    meta.textContent = "acceleration magnitude (device units) — min " + min.toFixed(0) +
+      " · avg " + avg.toFixed(0) + " · max " + max.toFixed(0) +
+      " · " + mags.length + " samples" + (stride > 1 ? " (line downsampled for display)" : "");
+    wrap.appendChild(meta);
+
+    return wrap;
   }
 
   function createRosterSwimmer() {
