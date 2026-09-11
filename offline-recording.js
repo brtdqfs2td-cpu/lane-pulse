@@ -345,8 +345,17 @@
       delta = (1 / sampleRate) * 1e9;
     } else {
       var timeInBetween = Number(frameTimeStamp - previousFrameTimeStamp);
-      if (timeInBetween <= 0) throw new Error("Non-positive timestamp delta between frames");
-      delta = timeInBetween / samplesSize;
+      // A non-positive delta here used to be treated as fatal (aborting the
+      // whole file), on the assumption it could only mean a mislocated
+      // frame boundary. Real-hardware testing found it happening on
+      // otherwise perfectly valid frames -- deep into files that had
+      // already decoded dozens of frames cleanly -- so it's a real
+      // characteristic of some frames' timestamps (not strictly
+      // monotonic), not evidence of corruption. Falling back to the same
+      // nominal per-sample spacing used when there's no previous frame at
+      // all keeps that one frame's samples usable (slightly less precise
+      // inter-sample timing) instead of discarding the rest of the file.
+      delta = timeInBetween > 0 ? (timeInBetween / samplesSize) : ((1 / sampleRate) * 1e9);
     }
     var startTimeStamp;
     if (previousFrameTimeStamp === 0n) {

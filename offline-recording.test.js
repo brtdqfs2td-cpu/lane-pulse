@@ -172,6 +172,17 @@ assertEqual([accSamples[0].x, accSamples[0].y, accSamples[0].z], [5, 0, 0], "dec
 assertEqual([accSamples[1].x, accSamples[1].y, accSamples[1].z], [-6, 10, 20], "decodeAccFrame sample 1 x/y/z (signed byte -6)");
 assertEqual(accSamples[1].timeStamp, 1000n, "decodeAccFrame last sample carries the frame's own timestamp");
 
+// getTimeStamps: a non-positive delta between frames used to be fatal
+// (threw and aborted the whole file); real hardware testing found it
+// happening on otherwise-valid frames deep into files that had already
+// decoded dozens of frames cleanly, so it's now tolerated with a fallback
+// to nominal per-sample spacing instead of throwing.
+var backwardsTs = O.getTimeStamps(2000n, 1500n, 4, 52); // frameTimeStamp (1500) < previousFrameTimeStamp (2000)
+assertEqual(backwardsTs.length, 4, "getTimeStamps: a non-positive delta no longer throws -- still returns one timestamp per sample");
+assertEqual(backwardsTs[3], 1500n, "getTimeStamps: the last sample still carries the frame's own (real) timestamp even on the fallback path");
+var equalTs = O.getTimeStamps(2000n, 2000n, 3, 52); // frameTimeStamp === previousFrameTimeStamp (zero delta)
+assertEqual(equalTs.length, 3, "getTimeStamps: a zero delta between frames also falls back rather than throwing");
+
 // ---------------------------------------------------------------------
 // File name -> measurement type mapping
 // ---------------------------------------------------------------------
