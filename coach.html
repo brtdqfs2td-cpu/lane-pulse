@@ -1366,6 +1366,19 @@
                 syncOfflineResultEl.textContent = "fetching " + (i + 1) + "/" + results.length + ": " + entry.path + " (" + entry.size + "b)…";
                 return LanePulseOffline.getFile(mtuCharRef, entry.path)
                   .then(function (bytes) {
+                    // Cross-check against the directory listing's own declared
+                    // size -- the sequence-number gap check in psftpRequest
+                    // only catches SOME dropped-packet corruption (it's a 4-bit
+                    // rolling counter, so exactly 16 dropped packets in a row
+                    // wraps back to the expected value and goes undetected).
+                    // Real hardware testing found one file decode to three
+                    // different sample counts across three fetches with no
+                    // gap ever flagged -- this is a stronger, protocol-level
+                    // check against ground truth instead of a heuristic.
+                    if (typeof entry.size === "number" && bytes.length !== entry.size) {
+                      throw new Error("fetched " + bytes.length + " bytes but the directory listing declared " +
+                        entry.size + " -- payload is corrupted or incomplete");
+                    }
                     var decoded = LanePulseOffline.decodeAccRecordingFile(bytes);
                     var result = { path: entry.path, size: entry.size, ok: true, frameCount: decoded.frameCount, sampleCount: decoded.samples.length };
                     if (!swimmer.rosterSwimmerId) {
