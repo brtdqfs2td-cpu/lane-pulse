@@ -532,6 +532,21 @@
     return swimmer.psftpChannelPromise;
   }
 
+  // Same caching pattern as getPsftpChannel, for the PMD control
+  // characteristic (used to trigger/stop a new offline recording, as
+  // opposed to PSFTP which only ever reads recordings that already exist).
+  function getPmdControlChannel(swimmer) {
+    if (!swimmer.pmdControlChannelPromise) {
+      swimmer.pmdControlChannelPromise = swimmer.device.gatt.connect()
+        .then(function (server) { return LanePulseOffline.preparePmdControlChannel(server); })
+        .catch(function (err) {
+          swimmer.pmdControlChannelPromise = null; // allow retrying on the next click
+          throw err;
+        });
+    }
+    return swimmer.pmdControlChannelPromise;
+  }
+
   function teamMaxHr() {
     var v = parseInt(el.teamMaxHr.value, 10);
     return (v && v > 60 && v < 240) ? v : 190;
@@ -1486,6 +1501,83 @@
 
     var tdActions = document.createElement("td");
     tdActions.style.minWidth = "160px";
+
+    // Offline recording trigger (PMD control point): starts/stops a NEW
+    // offline ACC recording on the sensor itself -- distinct from
+    // everything PSFTP-based below, which only ever reads recordings that
+    // already exist. Queries the device's own supported settings before
+    // starting (52Hz/16-bit/3ch/8-range if offered, matching every
+    // recording this app has successfully decoded so far -- see
+    // chooseOfflineAccSettings) rather than assuming fixed values it might
+    // reject. Always unencrypted (no secret provided) -- Lane Pulse has no
+    // key management, so that's the only option it can read back later.
+    if (window.LanePulseOffline) {
+      var startRecBtn = document.createElement("button");
+      startRecBtn.className = "btn btn-ghost btn-sm";
+      startRecBtn.type = "button";
+      startRecBtn.textContent = "Start ACC recording";
+      startRecBtn.style.marginBottom = "4px";
+      var stopRecBtn = document.createElement("button");
+      stopRecBtn.className = "btn btn-ghost btn-sm";
+      stopRecBtn.type = "button";
+      stopRecBtn.textContent = "Stop ACC recording";
+      stopRecBtn.style.marginBottom = "4px";
+      var recResultEl = document.createElement("div");
+      recResultEl.style.fontSize = "11px";
+      recResultEl.style.color = "var(--ink-muted)";
+      recResultEl.style.marginBottom = "6px";
+      recResultEl.style.wordBreak = "break-word";
+
+      startRecBtn.addEventListener("click", function () {
+        if (!swimmer.device || !swimmer.device.gatt || !swimmer.device.gatt.connected) {
+          recResultEl.textContent = "sensor not connected";
+          return;
+        }
+        startRecBtn.disabled = true;
+        recResultEl.textContent = "checking supported settings…";
+        var chosen = null;
+        getPmdControlChannel(swimmer)
+          .then(function (controlChar) {
+            return LanePulseOffline.queryOfflineAccSettings(controlChar).then(function (available) {
+              chosen = LanePulseOffline.chooseOfflineAccSettings(available);
+              recResultEl.textContent = "starting recording (" + JSON.stringify(chosen) + ")…";
+              return LanePulseOffline.startOfflineAccRecording(controlChar, chosen);
+            });
+          })
+          .then(function () {
+            startRecBtn.disabled = false;
+            recResultEl.textContent = "OK — recording started (" + JSON.stringify(chosen) +
+              "). The file won't show up under \"Sync offline recordings\" right away -- the sensor buffers before writing to storage, which can take a few minutes.";
+          })
+          .catch(function (err) {
+            startRecBtn.disabled = false;
+            recResultEl.textContent = "failed: " + err.message;
+          });
+      });
+
+      stopRecBtn.addEventListener("click", function () {
+        if (!swimmer.device || !swimmer.device.gatt || !swimmer.device.gatt.connected) {
+          recResultEl.textContent = "sensor not connected";
+          return;
+        }
+        stopRecBtn.disabled = true;
+        recResultEl.textContent = "stopping recording…";
+        getPmdControlChannel(swimmer)
+          .then(function (controlChar) { return LanePulseOffline.stopOfflineAccRecording(controlChar); })
+          .then(function () {
+            stopRecBtn.disabled = false;
+            recResultEl.textContent = "OK — recording stopped.";
+          })
+          .catch(function (err) {
+            stopRecBtn.disabled = false;
+            recResultEl.textContent = "failed: " + err.message;
+          });
+      });
+
+      tdActions.appendChild(startRecBtn);
+      tdActions.appendChild(stopRecBtn);
+      tdActions.appendChild(recResultEl);
+    }
 
     // Offline recording sync (PMD+PSFTP): connects, walks the sensor's
     // offline storage for every ACC recording, and decodes each one.

@@ -310,6 +310,72 @@ assertEqual(O.parsePmdSettings([]), {}, "parsePmdSettings: empty input returns e
 assertThrows(function () { O.parsePmdSettings([99, 1, 0]); }, "parsePmdSettings rejects an unknown setting type ID");
 
 // ---------------------------------------------------------------------
+// encodePmdSettingsSelected -- the encode counterpart of parsePmdSettings,
+// used to build the REQUEST_MEASUREMENT_START payload when triggering a
+// new offline recording. [typeId][count=1][value bytes LE].
+// ---------------------------------------------------------------------
+assertEqual(
+  O.encodePmdSettingsSelected({ SAMPLE_RATE: 52 }),
+  [0, 1, 52, 0],
+  "encodePmdSettingsSelected: SAMPLE_RATE (2-byte LE)"
+);
+assertEqual(
+  O.encodePmdSettingsSelected({ CHANNELS: 3, RANGE: 8 }),
+  [2, 1, 8, 0, 4, 1, 3], // RANGE (typeId 2) before CHANNELS (typeId 4) -- always ascending typeId order, regardless of key order in `selected`
+  "encodePmdSettingsSelected: multiple settings encode in ascending typeId order"
+);
+assertEqual(
+  O.encodePmdSettingsSelected({ SAMPLE_RATE: 52, FACTOR: 1.0 }),
+  [0, 1, 52, 0], // FACTOR is response-only and must never be sent, even if present in `selected`
+  "encodePmdSettingsSelected: silently skips response-only fields (FACTOR)"
+);
+assertEqual(O.encodePmdSettingsSelected({}), [], "encodePmdSettingsSelected: empty selection encodes to nothing");
+
+// ---------------------------------------------------------------------
+// chooseOfflineAccSettings -- picks 52Hz/16-bit/3ch/8-range when the
+// device offers them (matching every real recording decoded so far),
+// falls back to the highest available value otherwise, and omits a
+// setting entirely if the device advertised no options for it at all.
+// ---------------------------------------------------------------------
+assertEqual(
+  O.chooseOfflineAccSettings({ SAMPLE_RATE: [13, 26, 52, 104], RESOLUTION: [16], CHANNELS: [3], RANGE: [2, 4, 8] }),
+  { SAMPLE_RATE: 52, RESOLUTION: 16, CHANNELS: 3, RANGE: 8 },
+  "chooseOfflineAccSettings: picks the preferred value when the device offers it"
+);
+assertEqual(
+  O.chooseOfflineAccSettings({ SAMPLE_RATE: [13, 26, 104] }),
+  { SAMPLE_RATE: 104 },
+  "chooseOfflineAccSettings: falls back to the max available value when the preferred one isn't offered"
+);
+assertEqual(
+  O.chooseOfflineAccSettings({ SAMPLE_RATE: [52] }),
+  { SAMPLE_RATE: 52 },
+  "chooseOfflineAccSettings: omits a setting entirely when the device advertises no options for it"
+);
+
+// ---------------------------------------------------------------------
+// parsePmdControlPointResponse -- [0]=0xF0 response code, [1]=opcode,
+// [2]=measurement type, [3]=status, [4]=more flag (SUCCESS only),
+// [5..]=parameters. Mirrors PmdControlPointResponse.kt from the official
+// SDK exactly.
+// ---------------------------------------------------------------------
+var successResponse = O.parsePmdControlPointResponse([0xf0, 2, 2, 0, 0, 10, 20]);
+assertEqual(successResponse.statusCode, 0, "parsePmdControlPointResponse: SUCCESS status code");
+assertEqual(successResponse.statusName, "SUCCESS", "parsePmdControlPointResponse: SUCCESS status name");
+assertEqual(successResponse.more, false, "parsePmdControlPointResponse: more=false when the flag byte is 0");
+assertEqual(Array.prototype.slice.call(successResponse.parameters), [10, 20], "parsePmdControlPointResponse: parameters");
+
+var continuedResponse = O.parsePmdControlPointResponse([0xf0, 2, 2, 0, 1, 10, 20]);
+assertEqual(continuedResponse.more, true, "parsePmdControlPointResponse: more=true when the flag byte is nonzero");
+
+var errorResponse = O.parsePmdControlPointResponse([0xf0, 2, 2, 6]);
+assertEqual(errorResponse.statusName, "ERROR_ALREADY_IN_STATE", "parsePmdControlPointResponse: recognizes a real error status code");
+assertEqual(errorResponse.more, false, "parsePmdControlPointResponse: more is always false on a non-SUCCESS status, even with no flag byte present");
+assertEqual(Array.prototype.slice.call(errorResponse.parameters), [], "parsePmdControlPointResponse: no parameters on error");
+
+assertThrows(function () { O.parsePmdControlPointResponse([0xf0, 2]); }, "parsePmdControlPointResponse rejects a response shorter than the fixed 4-byte header");
+
+// ---------------------------------------------------------------------
 // decodeAccRecordingFile -- full synthetic file: header + settings
 // (SAMPLE_RATE=52, FACTOR=1.0) + two raw TYPE_0 ACC frames (2 samples
 // each, 1 byte/channel, 3 channels -> 6 bytes dataContent -> 16-byte

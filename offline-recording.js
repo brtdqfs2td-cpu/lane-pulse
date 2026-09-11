@@ -817,6 +817,84 @@
     return settings;
   }
 
+  // Encodes a "selected settings" object (e.g. {SAMPLE_RATE:52, RANGE:8})
+  // into the wire format REQUEST_MEASUREMENT_START expects: repeated
+  // [typeId(1)][count=1(1)][value bytes, little-endian, fieldSize each].
+  // Mirrors PmdSetting.serializeSelected() from the official SDK -- FACTOR
+  // and SOURCE_MEASUREMENT_RANGE are response-only fields and are never
+  // sent, even if somehow present in `selected` (matches the real SDK,
+  // which explicitly skips them here too).
+  function encodePmdSettingsSelected(selected) {
+    var bytes = [];
+    Object.keys(PMD_SETTING_TYPE).forEach(function (typeIdStr) {
+      var typeId = Number(typeIdStr);
+      var info = PMD_SETTING_TYPE[typeId];
+      if (info.name === "FACTOR" || info.name === "SOURCE_MEASUREMENT_RANGE") return;
+      if (!(info.name in selected)) return;
+      var value = selected[info.name];
+      bytes.push(typeId, 1);
+      for (var i = 0; i < info.fieldSize; i++) bytes.push((value >> (i * 8)) & 0xff);
+    });
+    return bytes;
+  }
+
+  // Picks concrete values to request when starting an offline ACC
+  // recording, from the device's own advertised available settings
+  // (queried via GET_MEASUREMENT_SETTINGS -- parsed with the same
+  // parsePmdSettings already used for .REC file headers, since it's
+  // exactly the same TLV format). Prefers 52 Hz / 16-bit resolution / 3
+  // channels when the device offers them, since that's exactly what every
+  // real recording Lane Pulse has successfully decoded so far used --
+  // falls back to the highest available value for anything not offered
+  // (rather than guessing a value the device might reject), and omits a
+  // setting entirely if the device didn't advertise any options for it at
+  // all, letting the device fall back to its own default.
+  var ACC_PREFERRED_SETTINGS = { SAMPLE_RATE: 52, RESOLUTION: 16, CHANNELS: 3, RANGE: 8 };
+  function chooseOfflineAccSettings(available) {
+    var selected = {};
+    ["SAMPLE_RATE", "RESOLUTION", "CHANNELS", "RANGE"].forEach(function (name) {
+      var options = available[name];
+      if (!options || !options.length) return;
+      var preferred = ACC_PREFERRED_SETTINGS[name];
+      selected[name] = options.indexOf(preferred) !== -1 ? preferred : Math.max.apply(null, options);
+    });
+    return selected;
+  }
+
+  // Parses one PMD control point response packet: [0]=0xF0 response-code
+  // constant, [1]=echoed opcode, [2]=echoed measurement type, [3]=status,
+  // [4]=more-packets flag (only meaningful when status is SUCCESS),
+  // [5..]=parameters. Mirrors PmdControlPointResponse.kt from the official
+  // SDK exactly. Much simpler than PSFTP's RFC76 chunked transport (see
+  // pmdControlRequest below) -- one write, then one or more notification
+  // packets, continuation signalled by a plain boolean rather than a
+  // rolling sequence number.
+  var PMD_CONTROL_POINT_STATUS = {
+    0: "SUCCESS", 1: "ERROR_INVALID_OP_CODE", 2: "ERROR_INVALID_MEASUREMENT_TYPE",
+    3: "ERROR_NOT_SUPPORTED", 4: "ERROR_INVALID_LENGTH", 5: "ERROR_INVALID_PARAMETER",
+    6: "ERROR_ALREADY_IN_STATE", 7: "ERROR_INVALID_RESOLUTION", 8: "ERROR_INVALID_SAMPLE_RATE",
+    9: "ERROR_INVALID_RANGE", 10: "ERROR_INVALID_MTU", 11: "ERROR_INVALID_NUMBER_OF_CHANNELS",
+    12: "ERROR_INVALID_STATE", 13: "ERROR_DEVICE_IN_CHARGER", 14: "ERROR_DISK_FULL",
+    15: "ERROR_INVALID_SOURCE_MEASUREMENT_TYPE", 16: "ERROR_INVALID_SOURCE_MEASUREMENT_RATE",
+    17: "ERROR_INVALID_DERIVED_MEASUREMENT_SETTINGS_GROUP", 18: "ERROR_INVALID_DERIVED_MEASUREMENT_METHOD"
+  };
+  function parsePmdControlPointResponse(bytes) {
+    if (bytes.length < 4) throw new Error("PMD control point response too short: " + bytes.length + " bytes");
+    var statusCode = bytes[3];
+    var statusName = PMD_CONTROL_POINT_STATUS[statusCode] || ("UNKNOWN_ERROR(" + statusCode + ")");
+    var more = statusCode === 0 && bytes.length > 4 && bytes[4] !== 0;
+    var parameters = bytes.length > 5 ? bytes.slice(5) : [];
+    return {
+      responseCode: bytes[0],
+      opCode: bytes[1],
+      measurementType: bytes[2],
+      statusCode: statusCode,
+      statusName: statusName,
+      more: more,
+      parameters: parameters
+    };
+  }
+
   // =====================================================================
   // Full file decode: header -> settings -> fixed-size frame split -> ACC
   // decode of each frame, threading the running timestamp between frames
@@ -1070,6 +1148,144 @@
     return walk(OFFLINE_ROOT_PATH);
   }
 
+  // =====================================================================
+  // PMD control point -- triggering a NEW offline recording (as opposed to
+  // everything above, which only ever reads recordings that already exist
+  // on the sensor). Confirmed against the official SDK source
+  // (BlePMDClient.kt/PmdControlPointResponse.kt): write the command byte +
+  // params to the control characteristic, then read the response back as
+  // one or more notifications on that SAME characteristic -- no chunked
+  // RFC76 transport needed here, PMD control payloads are small.
+  // =====================================================================
+  var PMD_CONTROL_POINT_COMMAND = {
+    GET_MEASUREMENT_SETTINGS: 1,
+    REQUEST_MEASUREMENT_START: 2,
+    STOP_MEASUREMENT: 3,
+    GET_MEASUREMENT_STATUS: 5
+  };
+  var PMD_MEASUREMENT_TYPE_ACC = 2;
+  var PMD_RECORDING_TYPE_OFFLINE_BIT = 0x80; // set on the request's first byte to mean "offline" rather than "online/streaming"
+  var PMD_CONTROL_TIMEOUT_MS = 15000;
+
+  // Sends one PMD control point command and resolves with the accumulated
+  // response parameters (concatenated across continuation packets, if any).
+  function pmdControlRequest(controlChar, commandByte, paramBytes) {
+    var payload = new Uint8Array([commandByte].concat(paramBytes || []));
+
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var accumulatedParams = [];
+      var timeoutId = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error("PMD control point request timed out after " + PMD_CONTROL_TIMEOUT_MS + "ms"));
+      }, PMD_CONTROL_TIMEOUT_MS);
+
+      function cleanup() {
+        clearTimeout(timeoutId);
+        controlChar.removeEventListener("characteristicvaluechanged", onNotify);
+      }
+
+      function onNotify(evt) {
+        if (settled) return;
+        var packet = new Uint8Array(evt.target.value.buffer);
+        var parsed;
+        try {
+          parsed = parsePmdControlPointResponse(packet);
+        } catch (err) {
+          settled = true;
+          cleanup();
+          reject(err);
+          return;
+        }
+        if (parsed.statusCode !== 0) {
+          settled = true;
+          cleanup();
+          reject(new Error("PMD control point error: " + parsed.statusName + " (code " + parsed.statusCode + ")"));
+          return;
+        }
+        accumulatedParams = accumulatedParams.concat(Array.prototype.slice.call(parsed.parameters));
+        if (!parsed.more) {
+          settled = true;
+          cleanup();
+          resolve(accumulatedParams);
+        }
+      }
+
+      controlChar.addEventListener("characteristicvaluechanged", onNotify);
+      // control commands are infrequent, important one-shots (not a bulk
+      // chunked stream like PSFTP), so use a GATT write that waits for an
+      // ack rather than writeValueWithoutResponse
+      controlChar.writeValueWithResponse(payload).catch(function (err) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      });
+    });
+  }
+
+  // Call once per device connection: resolves the PMD service, its control
+  // characteristic, and turns on notifications a single time.
+  function preparePmdControlChannel(gattServer) {
+    return gattServer.getPrimaryService(PMD_SERVICE_UUID)
+      .then(function (service) { return service.getCharacteristic(PMD_CONTROL_CHAR_UUID); })
+      .then(function (controlChar) {
+        return controlChar.startNotifications().then(function () { return controlChar; });
+      });
+  }
+
+  // What sample rate / resolution / range / channel options the device
+  // actually supports for offline ACC recording -- parsed with the same
+  // parsePmdSettings already used for .REC file headers (identical TLV
+  // format). Feed the result to chooseOfflineAccSettings to get concrete
+  // values for startOfflineAccRecording.
+  function queryOfflineAccSettings(controlChar) {
+    var requestByte = PMD_RECORDING_TYPE_OFFLINE_BIT | PMD_MEASUREMENT_TYPE_ACC;
+    return pmdControlRequest(controlChar, PMD_CONTROL_POINT_COMMAND.GET_MEASUREMENT_SETTINGS, [requestByte])
+      .then(function (params) { return parsePmdSettings(params); });
+  }
+
+  // Starts a new offline ACC recording with the given settings (from
+  // chooseOfflineAccSettings). No secret is ever included, which is what
+  // signals SecurityStrategy.NONE to the device -- exactly matching every
+  // real recording this module has successfully decoded so far (all had
+  // securityStrategy byte 0x00), and deliberately so: Lane Pulse has no key
+  // management, so recording unencrypted is the only option it supports
+  // reading back later.
+  function startOfflineAccRecording(controlChar, selectedSettings) {
+    var requestByte = PMD_RECORDING_TYPE_OFFLINE_BIT | PMD_MEASUREMENT_TYPE_ACC;
+    var settingsBytes = encodePmdSettingsSelected(selectedSettings);
+    return pmdControlRequest(controlChar, PMD_CONTROL_POINT_COMMAND.REQUEST_MEASUREMENT_START, [requestByte].concat(settingsBytes));
+  }
+
+  // Stops an in-progress offline ACC recording. Per the SDK's own
+  // documentation, the resulting file may not appear over PSFTP for up to
+  // several minutes after this resolves (the device buffers before
+  // flushing to storage) -- reading it too soon fails with PSFTP error 103
+  // (NO_SUCH_FILE_OR_DIRECTORY), not a bug in this module.
+  function stopOfflineAccRecording(controlChar) {
+    return pmdControlRequest(controlChar, PMD_CONTROL_POINT_COMMAND.STOP_MEASUREMENT, [PMD_MEASUREMENT_TYPE_ACC]);
+  }
+
+  // Queries which measurement types currently have an active online and/or
+  // offline recording. Each response byte: low 6 bits = measurement type
+  // ID (2 = ACC), high 2 bits = active state (0=none, 1=online, 2=offline,
+  // 3=both) -- mirrors PmdActiveMeasurement.fromStatusResponse.
+  function getMeasurementStatus(controlChar) {
+    return pmdControlRequest(controlChar, PMD_CONTROL_POINT_COMMAND.GET_MEASUREMENT_STATUS, []).then(function (params) {
+      return params.map(function (b) {
+        var activeBits = (b >> 6) & 0x03;
+        return {
+          measurementType: b & 0x3f,
+          online: activeBits === 1 || activeBits === 3,
+          offline: activeBits === 2 || activeBits === 3
+        };
+      });
+    });
+  }
+
   return {
     // GATT UUIDs
     PSFTP_SERVICE_UUID: PSFTP_SERVICE_UUID,
@@ -1118,12 +1334,25 @@
     readFloat32LE: readFloat32LE,
     decodeAccRecordingFile: decodeAccRecordingFile,
 
+    // PMD control point -- triggering a new offline recording (pure parts)
+    encodePmdSettingsSelected: encodePmdSettingsSelected,
+    chooseOfflineAccSettings: chooseOfflineAccSettings,
+    parsePmdControlPointResponse: parsePmdControlPointResponse,
+    PMD_CONTROL_POINT_COMMAND: PMD_CONTROL_POINT_COMMAND,
+    PMD_MEASUREMENT_TYPE_ACC: PMD_MEASUREMENT_TYPE_ACC,
+
     // GATT orchestration (browser-only, untested by the Node suite)
     psftpRequest: psftpRequest,
     preparePsftpChannel: preparePsftpChannel,
     listDirectory: listDirectory,
     getFile: getFile,
     drainChannel: drainChannel,
-    findOfflineAccRecordings: findOfflineAccRecordings
+    findOfflineAccRecordings: findOfflineAccRecordings,
+    pmdControlRequest: pmdControlRequest,
+    preparePmdControlChannel: preparePmdControlChannel,
+    queryOfflineAccSettings: queryOfflineAccSettings,
+    startOfflineAccRecording: startOfflineAccRecording,
+    stopOfflineAccRecording: stopOfflineAccRecording,
+    getMeasurementStatus: getMeasurementStatus
   };
 });
