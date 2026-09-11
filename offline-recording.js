@@ -951,7 +951,22 @@
           if (result.error !== null && result.error !== 0) {
             reject(new Error("PSFTP error code " + result.error + " (path: " + path + ")"));
           } else {
-            resolve(result.payload);
+            // Reaching the LAST packet doesn't mean nothing was dropped in
+            // between -- BLE notifications are unacknowledged, and real
+            // hardware testing found the same file decode to a visibly
+            // different sample count across two otherwise-identical fetches
+            // (65041 vs 66759 samples), which can only mean the bytes
+            // themselves differed. A dropped packet mid-stream shifts every
+            // byte after it, producing a plausible-looking but corrupted
+            // payload -- reject explicitly instead of silently handing back
+            // (and, downstream, decoding and syncing) wrong data.
+            var gap = reassembler.stats().sequenceGap;
+            if (gap) {
+              reject(new Error("PSFTP response had a dropped packet (seq " + gap.expected + "->" + gap.got +
+                ") -- payload is corrupted (path: " + path + ")"));
+            } else {
+              resolve(result.payload);
+            }
           }
         }
       }

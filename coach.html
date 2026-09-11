@@ -487,12 +487,13 @@
 
   function bluetoothSupported() { return !!(navigator.bluetooth && window.isSecureContext); }
 
-  // Real practice recordings synced so far have all stayed well under
-  // 200KB even at 800+ frames; anything bigger is almost certainly a stray
-  // multi-hour recording, not a practice -- "Sync offline recordings"
-  // skips fetching files over this size outright rather than burning the
-  // full PSFTP timeout on them.
-  var MAX_SYNC_FILE_SIZE_BYTES = 500 * 1024;
+  // Real practice recordings synced so far have topped out at 638KB (817
+  // frames, 111434 samples -- decoded and synced successfully); the three
+  // that consistently fail on transport are all 2-3x that. 500KB turned
+  // out too conservative and skipped that legitimate 638KB file on the
+  // very next run -- raised with headroom above it, still well below the
+  // problem files.
+  var MAX_SYNC_FILE_SIZE_BYTES = 800 * 1024;
 
   // Returns a cached, already-notification-enabled PSFTP MTU characteristic
   // for this swimmer, set up only once no matter how many PSFTP calls
