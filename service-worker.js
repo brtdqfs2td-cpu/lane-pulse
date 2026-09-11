@@ -2,7 +2,7 @@
 
 // Bump this on any change to PRECACHE_URLS or when you want clients to
 // pick up new page/asset versions on next load.
-var CACHE_VERSION = "lane-pulse-v5";
+var CACHE_VERSION = "lane-pulse-v6";
 
 var PRECACHE_URLS = [
   "./",
@@ -48,17 +48,24 @@ self.addEventListener("activate", function (event) {
 //
 // - Fonts and icons are content-versioned and effectively immutable, so
 //   serve them cache-first for instant (and offline) loads.
-// - HTML and JS are served network-first: always fetch the live version
-//   when online (so code/page changes land on the very next load, with no
-//   cache-busting dance), falling back to the cached copy only when the
-//   network is unavailable. Stale-while-revalidate was serving an old
+// - HTML and JS are served network-first, with a cache-busting query param
+//   appended to the *actual* fetch URL. Two earlier attempts at this still
+//   served stale code: stale-while-revalidate served an old
 //   offline-recording.js for a whole debugging session even in fresh
-//   incognito windows -- not worth the marginal speed on pages this small.
-//   The fetch() itself uses cache: "no-store" -- GitHub Pages serves these
-//   files with `Cache-Control: max-age=600`, and a plain fetch() honours
-//   that at the browser's HTTP-cache layer regardless of what this worker
-//   does, so a "network-first" SW without no-store still silently served a
-//   stale response for up to 10 minutes after every deploy.
+//   incognito windows, and a later "network-first + cache: no-store" fix
+//   still returned identical stale results -- because GitHub Pages sits
+//   behind a CDN (Fastly), and no-store only controls the *browser's own*
+//   HTTP cache. A stale copy sitting at a CDN edge node is untouched by
+//   that. The only fetch a CDN can never have cached is one for a URL it
+//   has never seen before, so every fetch here carries a fresh timestamp
+//   query param -- this is the one strategy that defeats every cache layer
+//   (browser, service worker, and CDN) at once, with certainty.
+function cacheBustedUrl(url) {
+  var u = new URL(url);
+  u.searchParams.set("swbust", Date.now() + "-" + Math.random().toString(36).slice(2));
+  return u.toString();
+}
+
 self.addEventListener("fetch", function (event) {
   var req = event.request;
   if (req.method !== "GET") return;
@@ -84,9 +91,11 @@ self.addEventListener("fetch", function (event) {
   }
 
   event.respondWith(
-    fetch(req, { cache: "no-store" }).then(function (response) {
+    fetch(cacheBustedUrl(req.url), { cache: "no-store" }).then(function (response) {
       if (response && response.ok) {
         var copy = response.clone();
+        // cache under the *original* request key so the offline fallback
+        // below can still find it by the URL the page actually asked for
         caches.open(CACHE_VERSION).then(function (cache) { cache.put(req, copy); });
       }
       return response;
