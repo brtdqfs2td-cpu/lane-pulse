@@ -483,6 +483,27 @@ assertEqual(
   O.looksLikeNextEnvelope(buildEnvelopeBytes(2, baseTs + 1000000000n, 0x7f), 0, 2, baseTs),
   false, "looksLikeNextEnvelope: rejects an out-of-range frameType (>14)"
 );
+// tightened whitelist: real hardware testing found frameType<=14 alone lets
+// through too many false matches within real (not random) sensor content
+// once checked at every byte position in an unbounded scan -- only the
+// exact raw/compressed type+compression combinations Lane Pulse decodes
+// should count as "looks like a real frame".
+assertEqual(
+  O.looksLikeNextEnvelope(buildEnvelopeBytes(2, baseTs, 0x02), 0, 2, baseTs),
+  true, "looksLikeNextEnvelope: accepts raw frameType 2 (a supported raw type)"
+);
+assertEqual(
+  O.looksLikeNextEnvelope(buildEnvelopeBytes(2, baseTs, 0x07), 0, 2, baseTs),
+  false, "looksLikeNextEnvelope: rejects raw frameType 7 (in the old <=14 range, but not a supported raw type)"
+);
+assertEqual(
+  O.looksLikeNextEnvelope(buildEnvelopeBytes(2, baseTs, 0x81), 0, 2, baseTs),
+  true, "looksLikeNextEnvelope: accepts compressed frameType 1 (a supported compressed type)"
+);
+assertEqual(
+  O.looksLikeNextEnvelope(buildEnvelopeBytes(2, baseTs, 0x82), 0, 2, baseTs),
+  false, "looksLikeNextEnvelope: rejects compressed frameType 2 (in the old <=14 range, but not a supported compressed type)"
+);
 
 // ---------------------------------------------------------------------
 // walkAndDecodeAccFrames / decodeAccRecordingFile end-to-end via the

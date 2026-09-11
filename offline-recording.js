@@ -591,29 +591,35 @@
   }
 
   // Does the file look like it has a genuine PMD frame envelope starting at
-  // `offset`? Checked after every raw sample / compressed delta block while
-  // walking a frame's content (see walkAndDecodeAccFrames below) to find
-  // where that frame actually ends -- no fixed search window, so it handles
-  // drift of any size, not just a small window around a guessed offset.
+  // `offset`? Checked at every byte position while scanning forward for a
+  // frame's real end (see findNextFrameStart/walkAndDecodeAccFrames below)
+  // -- no fixed search window, so it handles drift of any size, not just a
+  // small window around a guessed offset.
   //
-  // Matching measurementType + a plausible frameType (<=14) is exactly the
-  // criterion scanForFrameBoundaries has used all along, and real-hardware
-  // testing already proved it reliable at scale (one 669-frame file decoded
-  // with zero false positives using nothing else). An earlier version of
-  // this function also required the next timestamp to be monotonic and
-  // fall within a plausible time window, on the assumption that PMD frame
-  // timestamps are nanoseconds -- that assumption was wrong (or at least
-  // unverified) for this hardware/firmware: every real next-frame candidate
-  // looked implausible under it, so the walk swallowed entire files instead
-  // of stopping at the real boundary. Reverted to exactly the proven
-  // criterion; the notBeforeTimeStamp parameter is kept (unused) so callers
-  // don't need to change if a data-driven timestamp check is reintroduced
-  // later with an actual verified unit/scale.
+  // Matching measurementType + frameType<=14 (what scanForFrameBoundaries
+  // uses, and what this function first tried) was reliable when checked at
+  // only a handful of candidate positions near a documented-size guess, but
+  // an UNBOUNDED linear scan checks every single byte in a frame's real
+  // content -- across hundreds of positions per frame, a ~11.7% "plausible
+  // frameType" acceptance rate produces enough false matches within real
+  // (not random) sensor data to truncate frames early. Narrowed to exactly
+  // the type+compression combinations Lane Pulse actually decodes (raw
+  // 0/1/2, compressed 0/1 -- 5 of 256 possible bytes, ~2%): tighter by
+  // ~6x, and it costs nothing extra since a truly different frame type
+  // would fail to decode moments later anyway. An earlier version also
+  // added a timestamp-plausibility check on the (wrong, unverified)
+  // assumption that PMD timestamps are nanoseconds -- notBeforeTimeStamp is
+  // kept unused so callers don't need to change if a properly data-driven
+  // timestamp check is reintroduced later.
+  var ACC_VALID_RAW_TYPES = { 0: true, 1: true, 2: true };
+  var ACC_VALID_COMPRESSED_TYPES = { 0: true, 1: true };
   function looksLikeNextEnvelope(fileBytes, offset, expectedMeasurementType, notBeforeTimeStamp) {
     if (offset + 10 > fileBytes.length) return false;
     if (fileBytes[offset] !== expectedMeasurementType) return false;
-    var frameType = fileBytes[offset + 9] & 0x7f;
-    return frameType <= 14;
+    var frameTypeByte = fileBytes[offset + 9];
+    var isCompressed = (frameTypeByte & 0x80) !== 0;
+    var frameType = frameTypeByte & 0x7f;
+    return isCompressed ? !!ACC_VALID_COMPRESSED_TYPES[frameType] : !!ACC_VALID_RAW_TYPES[frameType];
   }
 
   // Finds where the NEXT frame's envelope starts by scanning forward one
