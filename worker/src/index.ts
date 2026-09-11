@@ -406,6 +406,18 @@ async function handlePostOfflineRecording(request: Request, env: Env): Promise<R
   const client = createClient(env);
   try {
     await client.connect();
+    // Upsert by (swimmer_id, recording_path): re-syncing the same offline
+    // recording (the coach's own app has no persistent "already synced"
+    // state, so every "Sync offline recordings" click re-uploads every file
+    // it finds) previously just INSERTed again -- 12 real recordings turned
+    // into 35+ rows after only 3 sync runs, and would keep growing
+    // unbounded on every future click, corrupting any aggregate analysis.
+    // Deleting any existing row for this exact (swimmer, path) before
+    // inserting keeps exactly one row per recording, always the latest.
+    await client.query(
+      `DELETE FROM offline_acc_recordings WHERE swimmer_id = $1 AND recording_path = $2`,
+      [payload.swimmerId, payload.recordingPath]
+    );
     const result = await client.query(
       `INSERT INTO offline_acc_recordings
          (swimmer_id, recording_path, device_start_time, sample_rate_hz, frame_count, sample_count, samples_json)
