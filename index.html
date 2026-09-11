@@ -1156,7 +1156,22 @@
 <script>
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", function () {
+      // Reload once, automatically, the moment a newer service worker takes
+      // over. Relying on the browser's own update schedule repeatedly left
+      // this page running months-old cached code across whole days, even
+      // with cache-busting inside the worker itself, because the browser
+      // simply never re-checked for a newer service-worker.js in the first
+      // place. controllerchange fires exactly when a new SW starts
+      // controlling this page; reg.update() forces an update check right
+      // now instead of waiting for the browser's own schedule.
+      var reloadedForUpdate = false;
+      navigator.serviceWorker.addEventListener("controllerchange", function () {
+        if (reloadedForUpdate) return;
+        reloadedForUpdate = true;
+        location.reload();
+      });
       navigator.serviceWorker.register("service-worker.js")
+        .then(function (reg) { reg.update(); })
         .catch(function () { /* offline caching unavailable — app still works online */ });
     });
   }
