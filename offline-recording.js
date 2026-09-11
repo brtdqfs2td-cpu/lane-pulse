@@ -596,26 +596,24 @@
   // where that frame actually ends -- no fixed search window, so it handles
   // drift of any size, not just a small window around a guessed offset.
   //
-  // Matching measurementType + a plausible frameType (<=14) alone isn't a
-  // strong enough signal on its own (real sample bytes can coincidentally
-  // match ~0.05% of the time) -- adding a timestamp check makes a false
-  // positive from random mid-frame data astronomically unlikely: the next
-  // frame's 8-byte timestamp must be >= the current frame's, and within a
-  // generous 30-second window of it (real ACC frames span well under that
-  // even with hundreds of packed samples), while a random 8-byte pattern
-  // lands in that narrow a window against the full 64-bit space essentially
-  // never.
-  var MAX_PLAUSIBLE_INTER_FRAME_NS = 30n * 1000000000n;
+  // Matching measurementType + a plausible frameType (<=14) is exactly the
+  // criterion scanForFrameBoundaries has used all along, and real-hardware
+  // testing already proved it reliable at scale (one 669-frame file decoded
+  // with zero false positives using nothing else). An earlier version of
+  // this function also required the next timestamp to be monotonic and
+  // fall within a plausible time window, on the assumption that PMD frame
+  // timestamps are nanoseconds -- that assumption was wrong (or at least
+  // unverified) for this hardware/firmware: every real next-frame candidate
+  // looked implausible under it, so the walk swallowed entire files instead
+  // of stopping at the real boundary. Reverted to exactly the proven
+  // criterion; the notBeforeTimeStamp parameter is kept (unused) so callers
+  // don't need to change if a data-driven timestamp check is reintroduced
+  // later with an actual verified unit/scale.
   function looksLikeNextEnvelope(fileBytes, offset, expectedMeasurementType, notBeforeTimeStamp) {
     if (offset + 10 > fileBytes.length) return false;
     if (fileBytes[offset] !== expectedMeasurementType) return false;
     var frameType = fileBytes[offset + 9] & 0x7f;
-    if (frameType > 14) return false;
-    var ts = 0n;
-    for (var i = 7; i >= 0; i--) ts = (ts << 8n) | BigInt(fileBytes[offset + 1 + i]);
-    if (ts < notBeforeTimeStamp) return false;
-    if (ts - notBeforeTimeStamp > MAX_PLAUSIBLE_INTER_FRAME_NS) return false;
-    return true;
+    return frameType <= 14;
   }
 
   // Consumes a raw ACC frame's content one fixed-width sample (x/y/z

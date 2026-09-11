@@ -444,10 +444,16 @@ assertEqual(frameOffsets, [0, 18, 39], "locateFrameOffsets: follows each frame's
 
 // ---------------------------------------------------------------------
 // looksLikeNextEnvelope -- the safety property the structural walk (below)
-// depends on: matching type + a plausible frameType alone isn't a strong
-// enough signal (real sample bytes can coincidentally match), so a
-// timestamp plausibility check must reject anything that doesn't look like
-// a genuine, forward-moving, nearby-in-time next frame.
+// depends on: measurementType must match and frameType must be plausible
+// (<=14). This is deliberately the EXACT SAME criterion scanForFrameBoundaries
+// has used all along (proven reliable at scale: a 669-frame real file
+// decoded with zero false positives on nothing else) -- an earlier version
+// also required a "plausible" timestamp jump, on the unverified assumption
+// that PMD frame timestamps are nanoseconds. That assumption was wrong for
+// this hardware and rejected every genuine next-frame candidate, so the
+// walk swallowed whole files. The large/backwards-jump cases below lock in
+// that this must NOT happen again -- both must be ACCEPTED regardless of
+// the timestamp value, since timestamp is no longer part of the criterion.
 // ---------------------------------------------------------------------
 function buildEnvelopeBytes(measurementType, timeStampNs, frameTypeByte) {
   var out = [measurementType];
@@ -459,15 +465,15 @@ function buildEnvelopeBytes(measurementType, timeStampNs, frameTypeByte) {
 var baseTs = 5000000000n; // 5s, arbitrary
 assertEqual(
   O.looksLikeNextEnvelope(buildEnvelopeBytes(2, baseTs + 1000000000n, 0x00), 0, 2, baseTs),
-  true, "looksLikeNextEnvelope: accepts a plausible forward timestamp jump"
+  true, "looksLikeNextEnvelope: accepts a matching type + frameType with a nearby timestamp"
 );
 assertEqual(
   O.looksLikeNextEnvelope(buildEnvelopeBytes(2, baseTs - 1n, 0x00), 0, 2, baseTs),
-  false, "looksLikeNextEnvelope: rejects a timestamp that goes backwards"
+  true, "looksLikeNextEnvelope: regression guard -- must NOT reject a timestamp that goes backwards (unit/scale is unverified, so timestamp is not part of the criterion)"
 );
 assertEqual(
   O.looksLikeNextEnvelope(buildEnvelopeBytes(2, baseTs + 31000000000n, 0x00), 0, 2, baseTs),
-  false, "looksLikeNextEnvelope: rejects an implausibly large forward jump (>30s)"
+  true, "looksLikeNextEnvelope: regression guard -- must NOT reject a huge forward jump either, for the same reason"
 );
 assertEqual(
   O.looksLikeNextEnvelope(buildEnvelopeBytes(3, baseTs + 1000000000n, 0x00), 0, 2, baseTs),
