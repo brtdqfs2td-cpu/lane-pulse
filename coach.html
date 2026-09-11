@@ -1572,14 +1572,19 @@
 <script>
   if ("serviceWorker" in navigator) {
     // Debugging escape hatch: visit once with ?nosw anywhere in the URL to
-    // fully unregister the service worker. It stays unregistered after
-    // that -- no need to keep the param on later visits -- so a plain hard
-    // reload (Ctrl+Shift+R) behaves like an ordinary page: no custom
-    // caching logic to fight, just the browser's own well-understood
+    // fully unregister the service worker and remember to STAY unregistered
+    // (a localStorage flag, not just a one-time action) -- so a plain hard
+    // reload (Ctrl+Shift+R) behaves like an ordinary page from then on: no
+    // custom caching logic to fight, just the browser's own well-understood
     // cache-bypass behavior. Faster than the DevTools unregister dance
     // during active development, when code is changing every few minutes.
-    // Re-registers itself automatically on any visit without ?nosw.
-    if (location.search.indexOf("nosw") !== -1) {
+    // Visit with ?yessw to turn it back on (re-registers immediately, with
+    // the auto-update logic below active for all future deploys).
+    var SW_DISABLED_KEY = "lanePulseSwDisabled";
+    if (location.search.indexOf("nosw") !== -1) localStorage.setItem(SW_DISABLED_KEY, "1");
+    if (location.search.indexOf("yessw") !== -1) localStorage.removeItem(SW_DISABLED_KEY);
+
+    if (localStorage.getItem(SW_DISABLED_KEY) === "1") {
       navigator.serviceWorker.getRegistrations().then(function (regs) {
         regs.forEach(function (reg) { reg.unregister(); });
       });
