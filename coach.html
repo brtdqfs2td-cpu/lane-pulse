@@ -487,6 +487,13 @@
 
   function bluetoothSupported() { return !!(navigator.bluetooth && window.isSecureContext); }
 
+  // Real practice recordings synced so far have all stayed well under
+  // 200KB even at 800+ frames; anything bigger is almost certainly a stray
+  // multi-hour recording, not a practice -- "Sync offline recordings"
+  // skips fetching files over this size outright rather than burning the
+  // full PSFTP timeout on them.
+  var MAX_SYNC_FILE_SIZE_BYTES = 500 * 1024;
+
   // Returns a cached, already-notification-enabled PSFTP MTU characteristic
   // for this swimmer, set up only once no matter how many PSFTP calls
   // follow. Reusing it (instead of re-resolving the service/characteristic
@@ -1342,6 +1349,19 @@
             // in flight per device at a time (see getPsftpChannel)
             return results.reduce(function (chain, entry, i) {
               return chain.then(function (soFar) {
+                // Every real practice recording synced so far has stayed
+                // well under 200KB, even ones with 800+ frames -- a file
+                // this large is almost certainly a stray multi-hour
+                // recording, not a swim practice, and fetching it burns the
+                // full 90s timeout (or longer) for nothing useful. Skip it
+                // outright rather than attempt it -- this also avoids the
+                // BLE-stream collision that a timed-out giant transfer can
+                // leave behind for the next file.
+                if (entry.size > MAX_SYNC_FILE_SIZE_BYTES) {
+                  soFar.push({ path: entry.path, size: entry.size, ok: false, skipped: true,
+                    error: "skipped: " + Math.round(entry.size / 1024) + "KB exceeds the " + Math.round(MAX_SYNC_FILE_SIZE_BYTES / 1024) + "KB sync limit (likely not a practice recording)" });
+                  return soFar;
+                }
                 syncOfflineResultEl.textContent = "fetching " + (i + 1) + "/" + results.length + ": " + entry.path + " (" + entry.size + "b)…";
                 return LanePulseOffline.getFile(mtuCharRef, entry.path)
                   .then(function (bytes) {
@@ -1405,7 +1425,9 @@
             if (!fileResults) return; // the "no recordings found" branch already set its own message
             syncOfflineBtn.disabled = false;
             var okCount = fileResults.filter(function (r) { return r.ok; }).length;
+            var skippedCount = fileResults.filter(function (r) { return r.skipped; }).length;
             var lines = fileResults.map(function (r) {
+              if (r.skipped) return "— " + r.path + " — " + r.error;
               if (!r.ok) return "✗ " + r.path + " — " + r.error;
               var base = "✓ " + r.path + " — " + r.frameCount + " frames, " + r.sampleCount + " samples";
               if (r.synced) return base + " (synced)";
@@ -1413,7 +1435,8 @@
               if (r.syncError) return base + " (sync failed: " + r.syncError + ")";
               return base;
             });
-            syncOfflineResultEl.textContent = okCount + "/" + fileResults.length + " decoded OK. " + lines.join(" | ");
+            syncOfflineResultEl.textContent = okCount + "/" + (fileResults.length - skippedCount) + " decoded OK" +
+              (skippedCount ? " (" + skippedCount + " skipped: too large)" : "") + ". " + lines.join(" | ");
           })
           .catch(function (err) {
             syncOfflineBtn.disabled = false;
