@@ -2,7 +2,7 @@
 
 // Bump this on any change to PRECACHE_URLS or when you want clients to
 // pick up new page/asset versions on next load.
-var CACHE_VERSION = "lane-pulse-v4";
+var CACHE_VERSION = "lane-pulse-v5";
 
 var PRECACHE_URLS = [
   "./",
@@ -54,6 +54,11 @@ self.addEventListener("activate", function (event) {
 //   network is unavailable. Stale-while-revalidate was serving an old
 //   offline-recording.js for a whole debugging session even in fresh
 //   incognito windows -- not worth the marginal speed on pages this small.
+//   The fetch() itself uses cache: "no-store" -- GitHub Pages serves these
+//   files with `Cache-Control: max-age=600`, and a plain fetch() honours
+//   that at the browser's HTTP-cache layer regardless of what this worker
+//   does, so a "network-first" SW without no-store still silently served a
+//   stale response for up to 10 minutes after every deploy.
 self.addEventListener("fetch", function (event) {
   var req = event.request;
   if (req.method !== "GET") return;
@@ -79,7 +84,7 @@ self.addEventListener("fetch", function (event) {
   }
 
   event.respondWith(
-    fetch(req).then(function (response) {
+    fetch(req, { cache: "no-store" }).then(function (response) {
       if (response && response.ok) {
         var copy = response.clone();
         caches.open(CACHE_VERSION).then(function (cache) { cache.put(req, copy); });
