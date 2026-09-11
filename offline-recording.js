@@ -616,55 +616,34 @@
     return frameType <= 14;
   }
 
-  // Consumes a raw ACC frame's content one fixed-width sample (x/y/z
-  // triple) at a time, stopping the moment what follows looks like a real
-  // next envelope. Returns the number of content bytes consumed.
-  function consumeRawFrameContent(fileBytes, contentStart, step, measurementType, notBeforeTimeStamp) {
-    var sampleByteSize = step * 3;
-    var offset = contentStart;
-    while (offset + sampleByteSize <= fileBytes.length) {
-      var nextOffset = offset + sampleByteSize;
-      if (looksLikeNextEnvelope(fileBytes, nextOffset, measurementType, notBeforeTimeStamp)) {
-        return nextOffset - contentStart;
-      }
-      offset = nextOffset;
+  // Finds where the NEXT frame's envelope starts by scanning forward one
+  // byte at a time from fromOffset, looking for the same type+frameType
+  // match looksLikeNextEnvelope checks. Deliberately a plain linear scan,
+  // not a parse-the-content-and-jump walk: an earlier version tried to
+  // consume compressed frames one delta block at a time (each block
+  // self-describing its own byte length), and on real hardware a single
+  // slightly-off length calculation overshot into the next frame's data --
+  // every subsequent "block header" read from there was effectively
+  // garbage, and the resulting jumps compounded into landing thousands of
+  // bytes away. A byte-by-byte scan can't overshoot like that: it only ever
+  // advances one byte at a time and stops at the first genuine match.
+  // Returns -1 if nothing is found before EOF (fromOffset's frame is last).
+  function findNextFrameStart(fileBytes, fromOffset, expectedMeasurementType) {
+    for (var offset = fromOffset; offset + 10 <= fileBytes.length; offset++) {
+      if (looksLikeNextEnvelope(fileBytes, offset, expectedMeasurementType, 0n)) return offset;
     }
-    return offset - contentStart; // ran out of file -- this is the last frame
+    return -1;
   }
 
-  // Consumes a compressed ACC frame's content: a fixed-size reference
-  // sample, then delta blocks (each self-describing its own byte length via
-  // a [deltaSize][sampleCount] header, per parseDeltaFramesAll) one at a
-  // time, stopping the moment what follows looks like a real next envelope.
-  // Returns the number of content bytes consumed.
-  function consumeCompressedFrameContent(fileBytes, contentStart, channels, refByteLen, measurementType, notBeforeTimeStamp) {
-    var offset = contentStart + channels * refByteLen;
-    if (looksLikeNextEnvelope(fileBytes, offset, measurementType, notBeforeTimeStamp)) {
-      return offset - contentStart; // frame was just the reference sample, no delta blocks
-    }
-    while (offset + 2 <= fileBytes.length) {
-      var deltaSize = fileBytes[offset];
-      var sampleCount = fileBytes[offset + 1];
-      var byteLength = Math.ceil((sampleCount * deltaSize * channels) / 8);
-      var blockEnd = offset + 2 + byteLength;
-      if (blockEnd > fileBytes.length) break; // ran out of file mid-block -- take what's left
-      if (looksLikeNextEnvelope(fileBytes, blockEnd, measurementType, notBeforeTimeStamp)) {
-        return blockEnd - contentStart;
-      }
-      offset = blockEnd;
-    }
-    return offset - contentStart; // ran out of file -- this is the last frame
-  }
-
-  // Walks the whole frame stream, decoding each frame's content unit-by-
-  // unit to find its real boundary (see consumeRawFrameContent /
-  // consumeCompressedFrameContent) rather than guessing it from a
-  // documented size. This is what decodeAccRecordingFile actually uses --
-  // locateFrameOffsets/determineRealFrameStride above are kept as simpler,
-  // exported utilities (and still what the debug tooling's diagnostics are
-  // built on) but proved insufficient on real hardware: compressed frames'
-  // real length can drift by more than any fixed search window handles, and
-  // a single mislocated frame corrupts every frame after it.
+  // Walks the whole frame stream, finding each frame's real boundary via
+  // findNextFrameStart rather than guessing it from a documented size or
+  // parsing/jumping through content. This is what decodeAccRecordingFile
+  // actually uses -- locateFrameOffsets/determineRealFrameStride above are
+  // kept as simpler, exported utilities (and still what the debug tooling's
+  // diagnostics are built on) but proved insufficient on real hardware:
+  // compressed frames' real length can drift by more than any fixed search
+  // window handles, and a single mislocated frame corrupts every frame
+  // after it.
   function walkAndDecodeAccFrames(fileBytes, header, factor, sampleRate) {
     var offset = header.dataOffset;
     var allSamples = [];
@@ -678,19 +657,21 @@
         break; // not enough bytes left for even one more envelope -- done
       }
       var contentStart = offset + 10;
-      var contentLength;
+      // don't start scanning for "the next frame" within this frame's own
+      // guaranteed-real leading bytes (its reference sample, for
+      // compressed; its first sample, for raw) -- avoids a same-frame
+      // false match right at the start of its own content
+      var minContentBytes;
+      if (envelope.isCompressedFrame) {
+        minContentBytes = ACC_COMPRESSED_CHANNELS * ACC_COMPRESSED_REF_BYTE_LEN;
+      } else {
+        var step = ACC_RAW_BYTE_WIDTHS[envelope.frameType];
+        minContentBytes = step ? step * 3 : 1;
+      }
+      var nextStart = findNextFrameStart(fileBytes, contentStart + minContentBytes, envelope.measurementType);
+      var contentEnd = (nextStart === -1) ? fileBytes.length : nextStart;
       try {
-        if (envelope.isCompressedFrame) {
-          contentLength = consumeCompressedFrameContent(
-            fileBytes, contentStart, ACC_COMPRESSED_CHANNELS, ACC_COMPRESSED_REF_BYTE_LEN,
-            envelope.measurementType, envelope.timeStamp
-          );
-        } else {
-          var step = ACC_RAW_BYTE_WIDTHS[envelope.frameType];
-          if (!step) throw new Error("ACC raw frame type " + envelope.frameType + " not supported");
-          contentLength = consumeRawFrameContent(fileBytes, contentStart, step, envelope.measurementType, envelope.timeStamp);
-        }
-        envelope.dataContent = fileBytes.slice(contentStart, contentStart + contentLength);
+        envelope.dataContent = fileBytes.slice(contentStart, contentEnd);
         var samples = decodeAccFrame(envelope, previousTimeStamp, factor, sampleRate);
         previousTimeStamp = envelope.timeStamp;
         allSamples = allSamples.concat(samples);
@@ -699,8 +680,9 @@
           .map(function (b) { return ("0" + b.toString(16)).slice(-2); }).join(" ");
         throw new Error(err.message + " [frame " + frameIndex + ", file offset " + offset + ", envelope bytes: " + firstBytes + "]");
       }
-      offset = contentStart + contentLength;
       frameIndex += 1;
+      if (nextStart === -1) break; // that was the last frame
+      offset = contentEnd;
     }
     return { samples: allSamples, frameCount: frameIndex };
   }
@@ -1031,8 +1013,7 @@
     determineRealFrameStride: determineRealFrameStride,
     locateFrameOffsets: locateFrameOffsets,
     looksLikeNextEnvelope: looksLikeNextEnvelope,
-    consumeRawFrameContent: consumeRawFrameContent,
-    consumeCompressedFrameContent: consumeCompressedFrameContent,
+    findNextFrameStart: findNextFrameStart,
     walkAndDecodeAccFrames: walkAndDecodeAccFrames,
     parsePmdSettings: parsePmdSettings,
     readFloat32LE: readFloat32LE,
