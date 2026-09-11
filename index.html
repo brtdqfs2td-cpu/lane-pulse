@@ -399,20 +399,25 @@
 
   /* ---------- history ---------- */
   .history-list { display: flex; flex-direction: column; }
+  .history-item { border-top: 1px solid var(--hairline); padding: 11px 2px 13px; }
+  .history-item:first-child { border-top: none; }
   .history-row {
     display: grid;
-    grid-template-columns: 1fr auto auto auto auto;
+    grid-template-columns: 1fr auto auto auto auto auto;
     gap: 14px;
     align-items: center;
-    padding: 11px 2px;
-    border-top: 1px solid var(--hairline);
+    padding-bottom: 2px;
     font-size: 13px;
   }
-  .history-row:first-child { border-top: none; }
   .history-date { color: var(--ink-secondary); }
   .history-metric { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
   .history-metric .u { color: var(--ink-muted); font-family: var(--font-ui); font-size: 10.5px; margin-left: 3px; }
   .history-empty { color: var(--ink-muted); font-size: 13px; padding: 6px 2px 2px; }
+  .zone-bar { display: flex; height: 7px; border-radius: 4px; overflow: hidden; margin: 8px 2px 6px; background: var(--surface-2); }
+  .zone-bar-segment { height: 100%; }
+  .zone-legend { display: flex; gap: 12px; flex-wrap: wrap; padding: 0 2px; font-size: 11px; color: var(--ink-muted); }
+  .zone-legend-item { display: flex; align-items: center; gap: 5px; }
+  .zone-legend-swatch { width: 8px; height: 8px; border-radius: 2px; }
 
   footer.note {
     font-size: 12px; color: var(--ink-muted); text-align: center; line-height: 1.6;
@@ -558,6 +563,8 @@
     sessionActive: false,
     sessionStart: null,
     sessionReadings: [],        // bpm values recorded during the active session
+    sessionZoneSeconds: { good: 0, warning: 0, serious: 0, critical: 0 },
+    sessionLastReadingAt: null, // ms epoch of the last reading, for attributing elapsed time to a zone
     streamStart: null,
     demoTimer: null,
     demoBpm: 95
@@ -846,7 +853,17 @@
       if (state.rr.length > RR_WINDOW) state.rr = state.rr.slice(state.rr.length - RR_WINDOW);
     }
 
-    if (state.sessionActive) state.sessionReadings.push(bpm);
+    if (state.sessionActive) {
+      state.sessionReadings.push(bpm);
+      var now = Date.now();
+      if (state.sessionLastReadingAt) {
+        // attribute the gap since the last reading to the zone just measured,
+        // capped so a reconnect/disconnect gap doesn't skew the totals
+        var elapsedSec = Math.min((now - state.sessionLastReadingAt) / 1000, 5);
+        state.sessionZoneSeconds[zoneFor(bpm).key] += elapsedSec;
+      }
+      state.sessionLastReadingAt = now;
+    }
 
     updateHero(bpm, contact);
     updateTiles();
@@ -1067,6 +1084,8 @@
     state.sessionActive = true;
     state.sessionStart = Date.now();
     state.sessionReadings = [];
+    state.sessionZoneSeconds = { good: 0, warning: 0, serious: 0, critical: 0 };
+    state.sessionLastReadingAt = null;
     el.sessionBtn.textContent = "End session";
     el.sessionBtn.classList.add("btn-danger");
     el.sessionTimer.classList.add("active");
@@ -1091,6 +1110,8 @@
         avgBpm: Math.round(sum / state.sessionReadings.length),
         maxBpm: Math.max.apply(null, state.sessionReadings),
         minBpm: Math.min.apply(null, state.sessionReadings),
+        hrvRmssd: rmssd(state.rr), // same methodology as coach.html: the latest rolling value at session end, not a full-session average
+        zoneSeconds: state.sessionZoneSeconds,
         mode: state.mode
       });
     }
@@ -1113,6 +1134,36 @@
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions)); } catch (e) { /* storage full or unavailable */ }
     renderHistory();
   }
+  // Same shape/methodology as summary.html's zone bar, keyed on the same
+  // good/warning/serious/critical names zoneFor()/ZONE_VAR already use here
+  // (summary.html's are snake_case because they come straight off SQL
+  // column names -- no such constraint on this page's own local storage).
+  var ZONE_SEGMENTS = [
+    { key: "good", varName: "--good", label: "Easy" },
+    { key: "warning", varName: "--warning", label: "Aerobic" },
+    { key: "serious", varName: "--serious", label: "Threshold" },
+    { key: "critical", varName: "--critical", label: "Max effort" }
+  ];
+  function zoneBarHtml(zoneSeconds) {
+    if (!zoneSeconds) return ""; // sessions saved before this feature existed have no zone data
+    var total = ZONE_SEGMENTS.reduce(function (sum, z) { return sum + (zoneSeconds[z.key] || 0); }, 0);
+    if (!total) return "";
+    var bar = ZONE_SEGMENTS.map(function (z) {
+      var seconds = zoneSeconds[z.key] || 0;
+      if (!seconds) return "";
+      var pct = (seconds / total) * 100;
+      return '<div class="zone-bar-segment" style="width:' + pct.toFixed(2) + '%; background: var(' + z.varName + ');"></div>';
+    }).join("");
+    var legend = ZONE_SEGMENTS.map(function (z) {
+      var seconds = zoneSeconds[z.key] || 0;
+      if (!seconds) return "";
+      var mins = Math.round(seconds / 60);
+      return '<span class="zone-legend-item"><span class="zone-legend-swatch" style="background: var(' + z.varName + ');"></span>' +
+        z.label + ' ' + mins + 'm</span>';
+    }).join("");
+    return '<div class="zone-bar">' + bar + '</div><div class="zone-legend">' + legend + '</div>';
+  }
+
   function renderHistory() {
     var sessions = loadSessions();
     el.historyList.innerHTML = "";
@@ -1121,6 +1172,9 @@
       return;
     }
     sessions.forEach(function (s) {
+      var item = document.createElement("div");
+      item.className = "history-item";
+
       var row = document.createElement("div");
       row.className = "history-row";
       var d = new Date(s.endedAt);
@@ -1131,13 +1185,24 @@
         '<span class="history-metric">' + formatDuration(s.durationMs) + '<span class="u">min</span></span>' +
         '<span class="history-metric">' + s.avgBpm + '<span class="u">avg</span></span>' +
         '<span class="history-metric">' + s.maxBpm + '<span class="u">peak</span></span>' +
+        '<span class="history-metric">' + (s.hrvRmssd ? Math.round(s.hrvRmssd) : "—") + '<span class="u">hrv</span></span>' +
         '<button class="btn btn-ghost btn-sm" type="button" aria-label="Copy session summary">Copy</button>';
       row.querySelector("button").addEventListener("click", function () {
         var text = dateStr + " — " + formatDuration(s.durationMs) + ", avg " + s.avgBpm +
-          " bpm, peak " + s.maxBpm + " bpm, low " + s.minBpm + " bpm";
+          " bpm, peak " + s.maxBpm + " bpm, low " + s.minBpm + " bpm" +
+          (s.hrvRmssd ? ", hrv " + Math.round(s.hrvRmssd) + "ms" : "");
         if (navigator.clipboard) navigator.clipboard.writeText(text).catch(function () {});
       });
-      el.historyList.appendChild(row);
+      item.appendChild(row);
+
+      var zoneHtml = zoneBarHtml(s.zoneSeconds);
+      if (zoneHtml) {
+        var zoneWrap = document.createElement("div");
+        zoneWrap.innerHTML = zoneHtml;
+        while (zoneWrap.firstChild) item.appendChild(zoneWrap.firstChild);
+      }
+
+      el.historyList.appendChild(item);
     });
   }
 
