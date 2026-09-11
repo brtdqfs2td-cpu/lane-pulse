@@ -506,6 +506,38 @@ assertEqual(
 );
 
 // ---------------------------------------------------------------------
+// isCompressedContentLengthValid -- real-hardware testing found requiring
+// an EXACT landing rejected every genuine compressed frame boundary (real
+// frames apparently carry a few bytes of trailing slack this model doesn't
+// fully account for). A small tolerance was added; these lock in that it's
+// still a real check, not a rubber stamp -- an overrun is always rejected
+// regardless of slack, and going past the tolerance window is rejected too.
+//
+// content: 6 ref bytes + one delta block, deliberately made bigger than the
+// tolerance window (header [deltaSize=4, sampleCount=10] -> byteLength =
+// ceil(10*4*3/8) = 15) so the tolerance can only ever skip validating a
+// few trailing bytes, never mask the real block going unchecked -- 23
+// bytes of real, well-formed content in total.
+// ---------------------------------------------------------------------
+var validCompressedContent = [0, 0, 0, 0, 0, 0, 4, 10].concat(new Array(15).fill(0));
+assertEqual(
+  O.isCompressedContentLengthValid(validCompressedContent, 0, 23, 3, 2),
+  true, "isCompressedContentLengthValid: accepts an exact landing"
+);
+assertEqual(
+  O.isCompressedContentLengthValid(validCompressedContent.concat(new Array(8).fill(0xff)), 0, 31, 3, 2),
+  true, "isCompressedContentLengthValid: accepts landing within the trailing-slack tolerance (8 bytes short) without misreading the padding as another block"
+);
+assertEqual(
+  O.isCompressedContentLengthValid(validCompressedContent.concat(new Array(9).fill(0xff)), 0, 32, 3, 2),
+  false, "isCompressedContentLengthValid: rejects landing past the trailing-slack tolerance (9 bytes short)"
+);
+assertEqual(
+  O.isCompressedContentLengthValid(validCompressedContent, 0, 18, 3, 2),
+  false, "isCompressedContentLengthValid: rejects a candidate that cuts a real (already in-progress, not-yet-in-slack-zone) block short"
+);
+
+// ---------------------------------------------------------------------
 // findValidNextFrameStart -- the real-hardware failure this exists to fix:
 // looksLikeNextEnvelope's type+frameType match, checked at every byte of
 // real frame content, does occasionally find a false positive (real sensor

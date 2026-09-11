@@ -652,28 +652,44 @@
 
   // A compressed frame's content is a reference sample followed by delta
   // blocks that each self-describe their own byte length -- re-walking
-  // that structure from a candidate boundary and requiring it to land
-  // EXACTLY on the boundary (no overrun, no leftover) is a hard structural
-  // fact a false-positive cut point essentially never satisfies by chance,
-  // unlike an earlier version of this walk that used this same block-
-  // walking logic to DECIDE where to jump (and compounded any error into a
-  // huge overshoot -- see findNextFrameStart above). Used only to validate
-  // a scan-found candidate here, so a wrong answer just means "reject and
-  // keep scanning," never "jump somewhere wrong."
+  // that structure from a candidate boundary and requiring it to land AT
+  // (or very near) the boundary, with no block ever overrunning it, is a
+  // hard structural fact a false-positive cut point essentially never
+  // satisfies by chance, unlike an earlier version of this walk that used
+  // this same block-walking logic to DECIDE where to jump (and compounded
+  // any error into a huge overshoot -- see findNextFrameStart above). Used
+  // only to validate a scan-found candidate here, so a wrong answer just
+  // means "reject and keep scanning," never "jump somewhere wrong."
+  //
+  // Real-hardware testing found requiring an EXACT landing (offset ===
+  // contentEnd) rejected every genuine boundary in a file -- real frames
+  // apparently carry a few bytes of trailing slack this model doesn't
+  // account for (padding/alignment of some kind). A small tolerance fixes
+  // that, checked BEFORE attempting to read another block header rather
+  // than after: once within COMPRESSED_TRAILING_SLACK_BYTES of the
+  // boundary, the remaining bytes are accepted as slack outright, instead
+  // of being misread as a plausible-looking-but-fake block header (which,
+  // for genuinely leftover padding bytes, can compute an enormous byte
+  // length purely by chance and wrongly look like a real overrun). A real
+  // frame's actual blocks are checked in full up to that point -- the
+  // shortcut only ever skips validating the LAST few bytes, never an
+  // entire real block, as long as the tolerance stays small relative to a
+  // real block's size (true for anything but a near-empty frame).
+  var COMPRESSED_TRAILING_SLACK_BYTES = 8;
   function isCompressedContentLengthValid(fileBytes, contentStart, contentEnd, channels, refByteLen) {
     var minLen = channels * refByteLen;
     if (contentEnd - contentStart < minLen) return false;
     var offset = contentStart + minLen;
     while (offset < contentEnd) {
-      if (offset + 2 > contentEnd) return false; // trailing partial block header
+      if (contentEnd - offset <= COMPRESSED_TRAILING_SLACK_BYTES) return true;
       var deltaSize = fileBytes[offset];
       var sampleCount = fileBytes[offset + 1];
       var byteLength = Math.ceil((sampleCount * deltaSize * channels) / 8);
       var blockEnd = offset + 2 + byteLength;
-      if (blockEnd > contentEnd) return false; // this block would overrun the candidate boundary
+      if (blockEnd > contentEnd) return false; // a real block (found before entering the slack zone) doesn't fit -- genuine mismatch, not slack
       offset = blockEnd;
     }
-    return offset === contentEnd; // must land exactly on it, no leftover bytes
+    return true; // landed exactly on the boundary
   }
 
   // Combines the scan with structural validation: keeps asking
