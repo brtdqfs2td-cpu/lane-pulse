@@ -443,6 +443,92 @@ var frameOffsets = O.locateFrameOffsets(driftBytes, driftHeader);
 assertEqual(frameOffsets, [0, 18, 39], "locateFrameOffsets: follows each frame's real (differently-drifted) boundary, not one fixed stride");
 
 // ---------------------------------------------------------------------
+// looksLikeNextEnvelope -- the safety property the structural walk (below)
+// depends on: matching type + a plausible frameType alone isn't a strong
+// enough signal (real sample bytes can coincidentally match), so a
+// timestamp plausibility check must reject anything that doesn't look like
+// a genuine, forward-moving, nearby-in-time next frame.
+// ---------------------------------------------------------------------
+function buildEnvelopeBytes(measurementType, timeStampNs, frameTypeByte) {
+  var out = [measurementType];
+  var big = BigInt(timeStampNs);
+  for (var i = 0; i < 8; i++) { out.push(Number(big & 0xffn)); big >>= 8n; }
+  out.push(frameTypeByte);
+  return out;
+}
+var baseTs = 5000000000n; // 5s, arbitrary
+assertEqual(
+  O.looksLikeNextEnvelope(buildEnvelopeBytes(2, baseTs + 1000000000n, 0x00), 0, 2, baseTs),
+  true, "looksLikeNextEnvelope: accepts a plausible forward timestamp jump"
+);
+assertEqual(
+  O.looksLikeNextEnvelope(buildEnvelopeBytes(2, baseTs - 1n, 0x00), 0, 2, baseTs),
+  false, "looksLikeNextEnvelope: rejects a timestamp that goes backwards"
+);
+assertEqual(
+  O.looksLikeNextEnvelope(buildEnvelopeBytes(2, baseTs + 31000000000n, 0x00), 0, 2, baseTs),
+  false, "looksLikeNextEnvelope: rejects an implausibly large forward jump (>30s)"
+);
+assertEqual(
+  O.looksLikeNextEnvelope(buildEnvelopeBytes(3, baseTs + 1000000000n, 0x00), 0, 2, baseTs),
+  false, "looksLikeNextEnvelope: rejects a mismatched measurementType"
+);
+assertEqual(
+  O.looksLikeNextEnvelope(buildEnvelopeBytes(2, baseTs + 1000000000n, 0x7f), 0, 2, baseTs),
+  false, "looksLikeNextEnvelope: rejects an out-of-range frameType (>14)"
+);
+
+// ---------------------------------------------------------------------
+// walkAndDecodeAccFrames / decodeAccRecordingFile end-to-end via the
+// structural walk -- a raw frame followed by a compressed frame, with the
+// header's dataPayloadSize deliberately wrong (5, nowhere near either
+// frame's real size) to prove the structural walk doesn't consult it at
+// all. This is the real fix for the real-hardware bug: locateFrameOffsets'
+// fixed search window couldn't handle drift beyond it (garbage frame types
+// 7/13/14 showed up deep into real files); the structural walk has no
+// window to exceed since it decodes each frame's actual content directly.
+// ---------------------------------------------------------------------
+function le8(n) {
+  var out = [];
+  var big = BigInt(n);
+  for (var i = 0; i < 8; i++) { out.push(Number(big & 0xffn)); big >>= 8n; }
+  return out;
+}
+function le16Signed(v) {
+  var u = v < 0 ? v + 65536 : v;
+  return [u & 0xff, (u >> 8) & 0xff];
+}
+function buildStructuralTestFile() {
+  var bytes = [0x00].concat([0x2b, 0x4c, 0x7c, 0x3d]).concat([0x01, 0, 0, 0]).concat([0, 0, 0, 0]).concat([0, 0, 0, 0]);
+  var dateStr = "2017-01-03 02:13:37";
+  for (var i = 0; i < dateStr.length; i++) bytes.push(dateStr.charCodeAt(i));
+  bytes.push(0x00);
+  var settings = [0, 1, 52, 0, 5, 1, 0x00, 0x00, 0x80, 0x3f]; // SAMPLE_RATE=52, FACTOR=1.0
+  bytes.push(settings.length);
+  bytes = bytes.concat(settings);
+  bytes.push(0);
+  bytes = bytes.concat([5, 0]); // dataPayloadSize deliberately wrong -- must be ignored entirely
+
+  var ts0 = 1000000000; // 1s
+  var frame0 = [2].concat(le8(ts0)).concat([0x00]).concat([1, 2, 3, 4, 5, 6]); // raw type 0, 2 samples
+
+  var ts1 = ts0 + 100000000; // +0.1s, plausible
+  var refBytes = le16Signed(10).concat(le16Signed(-5)).concat(le16Signed(0));
+  var deltaBlock = packBitsLSBFirst([2, -1, 3], 4);
+  var frame1 = [2].concat(le8(ts1)).concat([0x81]).concat(refBytes).concat([4, 1]).concat(deltaBlock); // compressed type 1
+
+  return bytes.concat(frame0).concat(frame1);
+}
+var structuralFile = buildStructuralTestFile();
+var structDecoded = O.decodeAccRecordingFile(structuralFile);
+assertEqual(structDecoded.frameCount, 2, "decodeAccRecordingFile (structural walk): finds both frames despite a wildly wrong documented dataPayloadSize");
+assertEqual(structDecoded.samples.length, 4, "decodeAccRecordingFile (structural walk): decodes all 4 samples (2 raw + 2 compressed)");
+assertEqual([structDecoded.samples[0].x, structDecoded.samples[0].y, structDecoded.samples[0].z], [1, 2, 3], "structural walk: raw frame sample 0");
+assertEqual([structDecoded.samples[1].x, structDecoded.samples[1].y, structDecoded.samples[1].z], [4, 5, 6], "structural walk: raw frame sample 1");
+assertEqual([structDecoded.samples[2].x, structDecoded.samples[2].y, structDecoded.samples[2].z], [10, -5, 0], "structural walk: compressed frame reference sample");
+assertEqual([structDecoded.samples[3].x, structDecoded.samples[3].y, structDecoded.samples[3].z], [12, -6, 3], "structural walk: compressed frame delta-decoded sample");
+
+// ---------------------------------------------------------------------
 console.log("");
 if (failures > 0) {
   console.log(failures + " FAILURE(S)");

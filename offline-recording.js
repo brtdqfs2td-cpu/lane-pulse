@@ -360,6 +360,17 @@
     return out;
   }
 
+  // Shared ACC frame-shape constants -- every Verity Sense config Lane
+  // Pulse has seen uses 3 channels (x/y/z) at 16-bit resolution for
+  // compressed frames' reference samples. Named here (rather than left as
+  // magic numbers inside decodeAccFrame) because the structural frame-
+  // boundary walk below needs the exact same values to know how many
+  // reference-sample bytes a compressed frame starts with.
+  var ACC_COMPRESSED_CHANNELS = 3;
+  var ACC_COMPRESSED_RESOLUTION_BITS = 16;
+  var ACC_COMPRESSED_REF_BYTE_LEN = Math.ceil(ACC_COMPRESSED_RESOLUTION_BITS / 8);
+  var ACC_RAW_BYTE_WIDTHS = { 0: 1, 1: 2, 2: 3 }; // bytes/channel by raw frameType
+
   // ACC-specific decode, dispatching on frame type + compressed flag.
   // Ported from AccData.kt -- only the paths Lane Pulse needs (types 0-2
   // raw, types 0-1 compressed; that covers every Verity Sense config).
@@ -368,14 +379,14 @@
     var raw;
     if (envelope.isCompressedFrame) {
       if (envelope.frameType === 0) {
-        raw = parseDeltaFramesAll(envelope.dataContent, 3, 16);
+        raw = parseDeltaFramesAll(envelope.dataContent, ACC_COMPRESSED_CHANNELS, ACC_COMPRESSED_RESOLUTION_BITS);
         var accFactor = factor * 1000; // arrives in G, convert to milliG
         var ts0 = getTimeStamps(previousTimeStamp, envelope.timeStamp, raw.length, sampleRate);
         for (var i = 0; i < raw.length; i++) {
           samples.push({ timeStamp: ts0[i], x: Math.round(raw[i][0] * accFactor), y: Math.round(raw[i][1] * accFactor), z: Math.round(raw[i][2] * accFactor) });
         }
       } else if (envelope.frameType === 1) {
-        raw = parseDeltaFramesAll(envelope.dataContent, 3, 16);
+        raw = parseDeltaFramesAll(envelope.dataContent, ACC_COMPRESSED_CHANNELS, ACC_COMPRESSED_RESOLUTION_BITS);
         var ts1 = getTimeStamps(previousTimeStamp, envelope.timeStamp, raw.length, sampleRate);
         for (var j = 0; j < raw.length; j++) {
           var scale = factor !== 1.0 ? factor : 1;
@@ -385,8 +396,7 @@
         throw new Error("ACC compressed frame type " + envelope.frameType + " not supported");
       }
     } else {
-      var byteWidths = { 0: 1, 1: 2, 2: 3 };
-      var step = byteWidths[envelope.frameType];
+      var step = ACC_RAW_BYTE_WIDTHS[envelope.frameType];
       if (!step) throw new Error("ACC raw frame type " + envelope.frameType + " not supported");
       var sampleByteSize = step * 3;
       if (envelope.dataContent.length === 0 || envelope.dataContent.length % sampleByteSize !== 0) {
@@ -580,6 +590,123 @@
     return offsets;
   }
 
+  // Does the file look like it has a genuine PMD frame envelope starting at
+  // `offset`? Checked after every raw sample / compressed delta block while
+  // walking a frame's content (see walkAndDecodeAccFrames below) to find
+  // where that frame actually ends -- no fixed search window, so it handles
+  // drift of any size, not just a small window around a guessed offset.
+  //
+  // Matching measurementType + a plausible frameType (<=14) alone isn't a
+  // strong enough signal on its own (real sample bytes can coincidentally
+  // match ~0.05% of the time) -- adding a timestamp check makes a false
+  // positive from random mid-frame data astronomically unlikely: the next
+  // frame's 8-byte timestamp must be >= the current frame's, and within a
+  // generous 30-second window of it (real ACC frames span well under that
+  // even with hundreds of packed samples), while a random 8-byte pattern
+  // lands in that narrow a window against the full 64-bit space essentially
+  // never.
+  var MAX_PLAUSIBLE_INTER_FRAME_NS = 30n * 1000000000n;
+  function looksLikeNextEnvelope(fileBytes, offset, expectedMeasurementType, notBeforeTimeStamp) {
+    if (offset + 10 > fileBytes.length) return false;
+    if (fileBytes[offset] !== expectedMeasurementType) return false;
+    var frameType = fileBytes[offset + 9] & 0x7f;
+    if (frameType > 14) return false;
+    var ts = 0n;
+    for (var i = 7; i >= 0; i--) ts = (ts << 8n) | BigInt(fileBytes[offset + 1 + i]);
+    if (ts < notBeforeTimeStamp) return false;
+    if (ts - notBeforeTimeStamp > MAX_PLAUSIBLE_INTER_FRAME_NS) return false;
+    return true;
+  }
+
+  // Consumes a raw ACC frame's content one fixed-width sample (x/y/z
+  // triple) at a time, stopping the moment what follows looks like a real
+  // next envelope. Returns the number of content bytes consumed.
+  function consumeRawFrameContent(fileBytes, contentStart, step, measurementType, notBeforeTimeStamp) {
+    var sampleByteSize = step * 3;
+    var offset = contentStart;
+    while (offset + sampleByteSize <= fileBytes.length) {
+      var nextOffset = offset + sampleByteSize;
+      if (looksLikeNextEnvelope(fileBytes, nextOffset, measurementType, notBeforeTimeStamp)) {
+        return nextOffset - contentStart;
+      }
+      offset = nextOffset;
+    }
+    return offset - contentStart; // ran out of file -- this is the last frame
+  }
+
+  // Consumes a compressed ACC frame's content: a fixed-size reference
+  // sample, then delta blocks (each self-describing its own byte length via
+  // a [deltaSize][sampleCount] header, per parseDeltaFramesAll) one at a
+  // time, stopping the moment what follows looks like a real next envelope.
+  // Returns the number of content bytes consumed.
+  function consumeCompressedFrameContent(fileBytes, contentStart, channels, refByteLen, measurementType, notBeforeTimeStamp) {
+    var offset = contentStart + channels * refByteLen;
+    if (looksLikeNextEnvelope(fileBytes, offset, measurementType, notBeforeTimeStamp)) {
+      return offset - contentStart; // frame was just the reference sample, no delta blocks
+    }
+    while (offset + 2 <= fileBytes.length) {
+      var deltaSize = fileBytes[offset];
+      var sampleCount = fileBytes[offset + 1];
+      var byteLength = Math.ceil((sampleCount * deltaSize * channels) / 8);
+      var blockEnd = offset + 2 + byteLength;
+      if (blockEnd > fileBytes.length) break; // ran out of file mid-block -- take what's left
+      if (looksLikeNextEnvelope(fileBytes, blockEnd, measurementType, notBeforeTimeStamp)) {
+        return blockEnd - contentStart;
+      }
+      offset = blockEnd;
+    }
+    return offset - contentStart; // ran out of file -- this is the last frame
+  }
+
+  // Walks the whole frame stream, decoding each frame's content unit-by-
+  // unit to find its real boundary (see consumeRawFrameContent /
+  // consumeCompressedFrameContent) rather than guessing it from a
+  // documented size. This is what decodeAccRecordingFile actually uses --
+  // locateFrameOffsets/determineRealFrameStride above are kept as simpler,
+  // exported utilities (and still what the debug tooling's diagnostics are
+  // built on) but proved insufficient on real hardware: compressed frames'
+  // real length can drift by more than any fixed search window handles, and
+  // a single mislocated frame corrupts every frame after it.
+  function walkAndDecodeAccFrames(fileBytes, header, factor, sampleRate) {
+    var offset = header.dataOffset;
+    var allSamples = [];
+    var previousTimeStamp = 0n;
+    var frameIndex = 0;
+    while (offset + 10 <= fileBytes.length) {
+      var envelope;
+      try {
+        envelope = parsePmdDataFrameEnvelope(fileBytes.slice(offset, Math.min(offset + 10, fileBytes.length)));
+      } catch (err) {
+        break; // not enough bytes left for even one more envelope -- done
+      }
+      var contentStart = offset + 10;
+      var contentLength;
+      try {
+        if (envelope.isCompressedFrame) {
+          contentLength = consumeCompressedFrameContent(
+            fileBytes, contentStart, ACC_COMPRESSED_CHANNELS, ACC_COMPRESSED_REF_BYTE_LEN,
+            envelope.measurementType, envelope.timeStamp
+          );
+        } else {
+          var step = ACC_RAW_BYTE_WIDTHS[envelope.frameType];
+          if (!step) throw new Error("ACC raw frame type " + envelope.frameType + " not supported");
+          contentLength = consumeRawFrameContent(fileBytes, contentStart, step, envelope.measurementType, envelope.timeStamp);
+        }
+        envelope.dataContent = fileBytes.slice(contentStart, contentStart + contentLength);
+        var samples = decodeAccFrame(envelope, previousTimeStamp, factor, sampleRate);
+        previousTimeStamp = envelope.timeStamp;
+        allSamples = allSamples.concat(samples);
+      } catch (err) {
+        var firstBytes = Array.prototype.slice.call(fileBytes.slice(offset, offset + 10))
+          .map(function (b) { return ("0" + b.toString(16)).slice(-2); }).join(" ");
+        throw new Error(err.message + " [frame " + frameIndex + ", file offset " + offset + ", envelope bytes: " + firstBytes + "]");
+      }
+      offset = contentStart + contentLength;
+      frameIndex += 1;
+    }
+    return { samples: allSamples, frameCount: frameIndex };
+  }
+
   // =====================================================================
   // PmdSetting decoding (from PmdSetting.kt): a simple repeated
   // [typeId(1)][count(1)][count x fieldSize bytes] structure. Only the
@@ -651,29 +778,9 @@
     var sampleRate = (settings.SAMPLE_RATE && settings.SAMPLE_RATE[0]) || VERITY_SENSE_DEFAULT_ACC_SAMPLE_RATE;
     var factor = (settings.FACTOR && settings.FACTOR[0] !== undefined) ? settings.FACTOR[0] : 1.0;
 
-    var frameOffsets = locateFrameOffsets(fileBytes, header);
-    var allSamples = [];
-    var previousTimeStamp = 0n;
-    frameOffsets.forEach(function (startOffset, frameIndex) {
-      var endOffset = (frameIndex + 1 < frameOffsets.length)
-        ? frameOffsets[frameIndex + 1]
-        : Math.min(startOffset + header.dataPayloadSize, fileBytes.length);
-      var frameBytes = fileBytes.slice(startOffset, endOffset);
-      var envelope;
-      try {
-        envelope = parsePmdDataFrameEnvelope(frameBytes);
-        var samples = decodeAccFrame(envelope, previousTimeStamp, factor, sampleRate);
-        previousTimeStamp = envelope.timeStamp;
-        allSamples = allSamples.concat(samples);
-      } catch (err) {
-        var firstBytes = Array.prototype.slice.call(frameBytes, 0, 10)
-          .map(function (b) { return ("0" + b.toString(16)).slice(-2); }).join(" ");
-        throw new Error(err.message + " [frame " + frameIndex + "/" + frameOffsets.length +
-          ", file offset " + startOffset + ", envelope bytes: " + firstBytes + "]");
-      }
-    });
+    var walked = walkAndDecodeAccFrames(fileBytes, header, factor, sampleRate);
 
-    return { header: header, settings: settings, sampleRate: sampleRate, factor: factor, frameCount: frameOffsets.length, samples: allSamples };
+    return { header: header, settings: settings, sampleRate: sampleRate, factor: factor, frameCount: walked.frameCount, samples: walked.samples };
   }
 
   // =====================================================================
@@ -925,6 +1032,10 @@
     findFrameBoundaryNear: findFrameBoundaryNear,
     determineRealFrameStride: determineRealFrameStride,
     locateFrameOffsets: locateFrameOffsets,
+    looksLikeNextEnvelope: looksLikeNextEnvelope,
+    consumeRawFrameContent: consumeRawFrameContent,
+    consumeCompressedFrameContent: consumeCompressedFrameContent,
+    walkAndDecodeAccFrames: walkAndDecodeAccFrames,
     parsePmdSettings: parsePmdSettings,
     readFloat32LE: readFloat32LE,
     decodeAccRecordingFile: decodeAccRecordingFile,
