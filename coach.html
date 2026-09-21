@@ -929,7 +929,7 @@
           })
           .then(function (detail) {
             chartContainer.innerHTML = "";
-            chartContainer.appendChild(buildAccChart(detail.samples));
+            chartContainer.appendChild(buildAccChart(detail.samples, detail.sampleRateHz));
           })
           .catch(function (err) {
             loaded = false;
@@ -947,7 +947,13 @@
   // approach. A recording can carry tens of thousands of samples, so the
   // plotted line is downsampled to a fixed point budget; the reported
   // min/avg/max stats below it are still computed from every real sample.
-  function buildAccChart(samples) {
+  //
+  // Also overlays LanePulseOffline.detectStrokes' detected peaks as small
+  // red dots directly on the curve -- this is the sanity-check surface for
+  // that EXPERIMENTAL, unvalidated algorithm (see its own doc comment):
+  // eyeball whether the dots actually land on what look like real stroke
+  // cycles before trusting the stroke count/rate number next to them.
+  function buildAccChart(samples, sampleRateHz) {
     var wrap = document.createElement("div");
     if (!samples || !samples.length) {
       wrap.innerHTML = '<div class="history-empty">No samples in this recording.</div>';
@@ -968,10 +974,12 @@
 
     var W = 600, H = 130, padY = 8;
     var innerH = H - padY * 2;
+    function xFor(realIndex) { return (realIndex / (mags.length - 1 || 1)) * W; }
+    function yFor(value) { return padY + innerH - ((value - min) / range) * innerH; }
+
     var coords = plotted.map(function (v, idx) {
       var x = (idx / (plotted.length - 1 || 1)) * W;
-      var y = padY + innerH - ((v - min) / range) * innerH;
-      return x.toFixed(1) + "," + y.toFixed(1);
+      return x.toFixed(1) + "," + yFor(v).toFixed(1);
     });
     var linePath = "M" + coords.join(" L");
     var areaPath = linePath + " L" + W + "," + H + " L0," + H + " Z";
@@ -995,6 +1003,19 @@
     line.setAttribute("vector-effect", "non-scaling-stroke");
     svg.appendChild(line);
 
+    var strokes = { strokeCount: 0, avgStrokeRateSpm: 0, peakIndices: [] };
+    if (sampleRateHz) {
+      strokes = LanePulseOffline.detectStrokes(samples, sampleRateHz);
+      strokes.peakIndices.forEach(function (realIndex) {
+        var dot = document.createElementNS(svgNs, "circle");
+        dot.setAttribute("cx", xFor(realIndex).toFixed(1));
+        dot.setAttribute("cy", yFor(mags[realIndex]).toFixed(1));
+        dot.setAttribute("r", "2.5");
+        dot.setAttribute("fill", "var(--critical)");
+        svg.appendChild(dot);
+      });
+    }
+
     wrap.appendChild(svg);
 
     var avg = mags.reduce(function (a, b) { return a + b; }, 0) / mags.length;
@@ -1004,6 +1025,15 @@
       " · avg " + avg.toFixed(0) + " · max " + max.toFixed(0) +
       " · " + mags.length + " samples" + (stride > 1 ? " (line downsampled for display)" : "");
     wrap.appendChild(meta);
+
+    if (sampleRateHz) {
+      var strokeMeta = document.createElement("div");
+      strokeMeta.className = "offline-chart-meta";
+      strokeMeta.innerHTML = "<strong style=\"color:var(--critical)\">●</strong> ~" + strokes.strokeCount +
+        " strokes detected, ~" + Math.round(strokes.avgStrokeRateSpm) + " strokes/min " +
+        "&mdash; <em>experimental, not yet validated against a manually-counted recording. Sanity-check the red dots above against real stroke cycles before trusting this number.</em>";
+      wrap.appendChild(strokeMeta);
+    }
 
     return wrap;
   }

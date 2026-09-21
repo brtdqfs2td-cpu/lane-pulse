@@ -698,6 +698,62 @@ assertEqual([structDecoded.samples[2].x, structDecoded.samples[2].y, structDecod
 assertEqual([structDecoded.samples[3].x, structDecoded.samples[3].y, structDecoded.samples[3].z], [12, -6, 3], "structural walk: compressed frame delta-decoded sample");
 
 // ---------------------------------------------------------------------
+// detectStrokes -- EXPERIMENTAL stroke-rate estimation (see the big
+// comment above its definition in offline-recording.js for the important
+// caveat: no real, manually-counted swim recording exists yet to validate
+// against). These tests only confirm the peak-detection MECHANICS behave
+// as designed against known synthetic signals -- they say nothing about
+// real-world accuracy against an actual swimmer.
+// ---------------------------------------------------------------------
+function buildSineSamples(sampleRateHz, durationSec, freqHz, amplitude, baseline) {
+  var n = Math.round(sampleRateHz * durationSec);
+  var samples = [];
+  for (var i = 0; i < n; i++) {
+    var t = i / sampleRateHz;
+    samples.push({ x: baseline + amplitude * Math.sin(2 * Math.PI * freqHz * t), y: 0, z: 0 });
+  }
+  return samples;
+}
+
+// a clean 1Hz signal (60 strokes/min) over 10s should count exactly 10
+// peaks, evenly spaced ~52 samples apart (one full cycle at 52Hz)
+var cleanSignal = buildSineSamples(52, 10, 1.0, 200, 1000);
+var cleanResult = O.detectStrokes(cleanSignal, 52);
+assertEqual(cleanResult.strokeCount, 10, "detectStrokes: counts exactly 10 peaks for a clean 1Hz signal over 10s");
+assertEqual(Math.round(cleanResult.avgStrokeRateSpm), 60, "detectStrokes: reports ~60 strokes/min for a clean 1Hz signal");
+
+// a perfectly flat signal (no variation at all) has no peaks to find
+var flatSignal = [];
+for (var fi = 0; fi < 200; fi++) flatSignal.push({ x: 1000, y: 0, z: 0 });
+assertEqual(O.detectStrokes(flatSignal, 52).strokeCount, 0, "detectStrokes: a flat signal produces zero strokes");
+
+// two sharp spikes only 5 samples apart (well under the ~18-sample/0.35s
+// refractory period at 52Hz) must be counted as ONE stroke, not two --
+// this is what keeps one stroke's ripple from being double-counted
+var closeSpikes = [];
+for (var ci = 0; ci < 100; ci++) closeSpikes.push({ x: 1000, y: 0, z: 0 });
+closeSpikes[30] = { x: 1400, y: 0, z: 0 };
+closeSpikes[35] = { x: 1420, y: 0, z: 0 };
+assertEqual(O.detectStrokes(closeSpikes, 52).strokeCount, 1, "detectStrokes: refractory period merges two close spikes into one stroke");
+
+// a strong 1Hz signal with a small high-frequency wiggle riding on top
+// (8Hz, amplitude 5 vs the main signal's 200) must count only the real
+// strokes, not the sub-threshold wiggle
+var mixedSignal = [];
+var mixedN = 52 * 6;
+for (var mi = 0; mi < mixedN; mi++) {
+  var mt = mi / 52;
+  var big = 200 * Math.sin(2 * Math.PI * 1.0 * mt);
+  var tiny = 5 * Math.sin(2 * Math.PI * 8.0 * mt);
+  mixedSignal.push({ x: 1000 + big + tiny, y: 0, z: 0 });
+}
+assertEqual(O.detectStrokes(mixedSignal, 52).strokeCount, 6, "detectStrokes: ignores a sub-threshold high-frequency wiggle, counts only the real 1Hz strokes (6 over 6s)");
+
+// degenerate inputs shouldn't throw
+assertEqual(O.detectStrokes([], 52), { strokeCount: 0, avgStrokeRateSpm: 0, peakIndices: [] }, "detectStrokes: empty samples array returns a zero result, doesn't throw");
+assertEqual(O.detectStrokes(cleanSignal, 0), { strokeCount: 0, avgStrokeRateSpm: 0, peakIndices: [] }, "detectStrokes: zero/missing sample rate returns a zero result, doesn't throw");
+
+// ---------------------------------------------------------------------
 console.log("");
 if (failures > 0) {
   console.log(failures + " FAILURE(S)");

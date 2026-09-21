@@ -923,6 +923,95 @@
   }
 
   // =====================================================================
+  // Stroke detection -- EXPERIMENTAL. Every recording decoded so far is
+  // old, unlabeled test data of unknown activity (not a real swim with a
+  // manually-counted stroke total), so this has no ground truth to
+  // validate against yet. It's a principled, well-established technique
+  // (peak-detection on a gravity-removed acceleration signal), not a
+  // guess -- but "principled" isn't the same as "verified accurate."
+  // Treat results as a rough estimate until a real recording with a known
+  // stroke count confirms it, and always sanity-check the detected peaks
+  // against the recording's own chart (coach.html overlays them).
+  //
+  // Deliberately works from acceleration MAGNITUDE (sqrt(x^2+y^2+z^2))
+  // rather than a specific axis, so it doesn't assume a fixed sensor mount
+  // -- Lane Pulse's swimmers wear the sensor at the temple for some and on
+  // the arm for others. Any periodic stroke-cycle motion should show up
+  // as periodic magnitude swings regardless of exactly where on the body
+  // it's measured, though the SIZE of those swings (and how reliably they
+  // clear the noise floor) will vary by mount and stroke type -- that's an
+  // accepted limitation, not something this algorithm can fully correct
+  // for without real data to tune against.
+  // =====================================================================
+
+  // Centered moving average over `windowSize` samples, computed via a
+  // prefix-sum so it's O(n) regardless of window size.
+  function movingAverage(values, windowSize) {
+    var n = values.length;
+    var out = new Array(n);
+    var half = Math.floor(windowSize / 2);
+    var prefix = new Array(n + 1);
+    prefix[0] = 0;
+    for (var i = 0; i < n; i++) prefix[i + 1] = prefix[i] + values[i];
+    for (var j = 0; j < n; j++) {
+      var lo = Math.max(0, j - half);
+      var hi = Math.min(n - 1, j + half);
+      out[j] = (prefix[hi + 1] - prefix[lo]) / (hi - lo + 1);
+    }
+    return out;
+  }
+
+  function standardDeviation(values) {
+    var n = values.length;
+    if (!n) return 0;
+    var mean = values.reduce(function (a, b) { return a + b; }, 0) / n;
+    var variance = values.reduce(function (a, b) { return a + (b - mean) * (b - mean); }, 0) / n;
+    return Math.sqrt(variance);
+  }
+
+  // Estimates stroke count/rate from a recording's decoded ACC samples.
+  // Pipeline: magnitude -> remove the slow-moving baseline (gravity +
+  // posture, via a ~1.5s moving average) -> light smoothing (~0.15s) to
+  // de-jitter without flattening real peaks -> local-maxima peak-pick with
+  // an adaptive prominence threshold (scaled to this recording's own
+  // signal, since different mounts/strokes produce very different swing
+  // sizes) and a refractory period (~0.35s, well above any real human
+  // stroke rate) so one stroke's ripple can't be counted twice.
+  function detectStrokes(samples, sampleRateHz) {
+    if (!samples || samples.length < 4 || !sampleRateHz) {
+      return { strokeCount: 0, avgStrokeRateSpm: 0, peakIndices: [] };
+    }
+
+    var mags = samples.map(function (s) { return Math.sqrt(s.x * s.x + s.y * s.y + s.z * s.z); });
+    var n = mags.length;
+
+    var baselineWindow = Math.max(3, Math.round(sampleRateHz * 1.5));
+    var baseline = movingAverage(mags, baselineWindow);
+    var dynamic = mags.map(function (v, i) { return v - baseline[i]; });
+
+    var smoothWindow = Math.max(1, Math.round(sampleRateHz * 0.15));
+    var smoothed = movingAverage(dynamic, smoothWindow);
+
+    var minProminence = standardDeviation(smoothed) * 0.5;
+    var refractorySamples = Math.max(1, Math.round(sampleRateHz * 0.35));
+
+    var peakIndices = [];
+    var lastPeakIndex = -Infinity;
+    for (var i = 1; i < n - 1; i++) {
+      if (smoothed[i] <= smoothed[i - 1] || smoothed[i] < smoothed[i + 1]) continue; // not a local max
+      if (smoothed[i] < minProminence) continue;
+      if (i - lastPeakIndex < refractorySamples) continue;
+      peakIndices.push(i);
+      lastPeakIndex = i;
+    }
+
+    var durationSec = (n - 1) / sampleRateHz;
+    var avgStrokeRateSpm = durationSec > 0 ? (peakIndices.length / durationSec) * 60 : 0;
+
+    return { strokeCount: peakIndices.length, avgStrokeRateSpm: avgStrokeRateSpm, peakIndices: peakIndices };
+  }
+
+  // =====================================================================
   // GATT orchestration -- browser-only (uses navigator.bluetooth
   // characteristic objects), NOT covered by the Node unit tests. This is
   // the one part of the module that can only be verified against real
@@ -1333,6 +1422,11 @@
     parsePmdSettings: parsePmdSettings,
     readFloat32LE: readFloat32LE,
     decodeAccRecordingFile: decodeAccRecordingFile,
+
+    // Stroke detection (experimental -- see comment above detectStrokes)
+    movingAverage: movingAverage,
+    standardDeviation: standardDeviation,
+    detectStrokes: detectStrokes,
 
     // PMD control point -- triggering a new offline recording (pure parts)
     encodePmdSettingsSelected: encodePmdSettingsSelected,
