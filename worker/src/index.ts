@@ -436,6 +436,83 @@ async function handlePostOfflineRecording(request: Request, env: Env): Promise<R
 }
 
 // ---------------------------------------------------------------
+// GET /offline-recordings -- coach-only, metadata for every synced offline
+// ACC recording across the roster (no samples -- those can run into the
+// thousands per recording; see the :id endpoint below for a single
+// recording's actual samples).
+// ---------------------------------------------------------------
+async function handleGetOfflineRecordings(request: Request, env: Env): Promise<Response> {
+  const authFail = requireCoachAuth(request, env);
+  if (authFail) return authFail;
+
+  const client = createClient(env);
+  try {
+    await client.connect();
+    const result = await client.query(
+      `SELECT r.recording_id, r.swimmer_id, sw.name AS swimmer_name, r.recording_path,
+              r.device_start_time, r.sample_rate_hz, r.frame_count, r.sample_count, r.synced_at
+       FROM offline_acc_recordings r
+       JOIN swimmers sw ON sw.swimmer_id = r.swimmer_id
+       ORDER BY r.device_start_time DESC NULLS LAST, r.synced_at DESC
+       LIMIT 200`
+    );
+    return json({ recordings: result.rows });
+  } catch (err) {
+    return json({ error: "database error", detail: String(err) }, 500);
+  } finally {
+    await client.end();
+  }
+}
+
+// ---------------------------------------------------------------
+// GET /offline-recordings/:id -- coach-only, one recording's full sample
+// data (for charting). samples_json is stored as text; parsed here so the
+// client gets a normal array, not a JSON-encoded string within JSON.
+// ---------------------------------------------------------------
+async function handleGetOfflineRecordingDetail(id: string, request: Request, env: Env): Promise<Response> {
+  const authFail = requireCoachAuth(request, env);
+  if (authFail) return authFail;
+
+  const client = createClient(env);
+  try {
+    await client.connect();
+    const result = await client.query(
+      `SELECT r.recording_id, r.swimmer_id, sw.name AS swimmer_name, r.recording_path,
+              r.device_start_time, r.sample_rate_hz, r.frame_count, r.sample_count,
+              r.samples_json, r.synced_at
+       FROM offline_acc_recordings r
+       JOIN swimmers sw ON sw.swimmer_id = r.swimmer_id
+       WHERE r.recording_id = $1`,
+      [id]
+    );
+    if (result.rows.length === 0) return json({ error: "not found" }, 404);
+    const row = result.rows[0];
+    let samples: unknown[];
+    try {
+      samples = JSON.parse(row.samples_json);
+    } catch {
+      return json({ error: "stored samples_json is not valid JSON" }, 500);
+    }
+    return json({
+      recordingId: row.recording_id,
+      swimmerId: row.swimmer_id,
+      swimmerName: row.swimmer_name,
+      recordingPath: row.recording_path,
+      deviceStartTime: row.device_start_time,
+      sampleRateHz: row.sample_rate_hz,
+      frameCount: row.frame_count,
+      sampleCount: row.sample_count,
+      syncedAt: row.synced_at,
+      samples,
+    });
+  } catch (err) {
+    return json({ error: "database error", detail: String(err) }, 500);
+  } finally {
+    await client.end();
+  }
+}
+
+// ---------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------
 export default {
@@ -472,6 +549,13 @@ export default {
     }
     if (path === "/offline-recordings" && request.method === "POST") {
       return handlePostOfflineRecording(request, env);
+    }
+    if (path === "/offline-recordings" && request.method === "GET") {
+      return handleGetOfflineRecordings(request, env);
+    }
+    const offlineDetailMatch = path.match(/^\/offline-recordings\/(\d+)$/);
+    if (offlineDetailMatch && request.method === "GET") {
+      return handleGetOfflineRecordingDetail(offlineDetailMatch[1], request, env);
     }
     const summaryMatch = path.match(/^\/swimmer\/([^/]+)\/summary$/);
     if (summaryMatch && request.method === "GET") {
